@@ -1,0 +1,86 @@
+# ── sse.toml ──────────────────────────────────────────────────────────────────
+# Demonstrates SSE (Server-Sent Events) streaming support.
+#
+# Crucible accumulates `data:` lines until the connection closes or
+# sse_timeout_ms is reached, then evaluates assertions on the joined output.
+#
+# How to run (requires a live SSE server):
+#   crucible run -s suites/examples/sse.toml
+#
+# Test server examples:
+#   • httpbin.org does NOT support SSE — use a local mock.
+#   • Run: python3 -m http.server (add SSE endpoint manually)
+#   • Or: npx http-server with a custom endpoint
+#
+# This suite targets a minimal local SSE server. You can start one with:
+#   python3 -c "
+#   from http.server import HTTPServer, BaseHTTPRequestHandler
+#   import time, json
+#   class H(BaseHTTPRequestHandler):
+#     def do_GET(self):
+#       if self.path == '/stream':
+#         self.send_response(200)
+#         self.send_header('Content-Type','text/event-stream')
+#         self.send_header('Cache-Control','no-cache')
+#         self.end_headers()
+#         for i in range(3):
+#           self.wfile.write(f'data: chunk {i}\n\n'.encode())
+#           self.wfile.flush()
+#           time.sleep(0.1)
+#         self.wfile.write('data: [DONE]\n\n'.encode())
+#         self.wfile.flush()
+#       else:
+#         self.send_response(404); self.end_headers()
+#   HTTPServer(('',4321),H).serve_forever()
+#   "
+
+[suite]
+name        = "SSE streaming examples"
+model       = "mock"
+category    = "examples"
+concurrency = 1
+
+[suite.http]
+base_url   = "http://localhost:4321"
+timeout_ms = 10000
+
+[suite.http.headers]
+Accept = "text/event-stream"
+
+# ── Test 1: SSE stream accumulation ──────────────────────────────────────────
+# sse = true forces SSE accumulation regardless of content-type header.
+# The runner collects all `data:` payloads (skipping [DONE] and blank lines)
+# and joins them with newlines for assertion.
+
+[[tests]]
+name           = "sse-chunks-accumulated"
+description    = "Three data chunks accumulated, [DONE] discarded"
+method         = "GET"
+path           = "/stream"
+sse            = true
+sse_timeout_ms = 2000      # stop collecting after 2 s (for persistent streams)
+
+assert = [
+  { type = "http_status",   code  = 200                        },
+  { type = "contains",      value = "chunk 0",  weight = 2.0   },
+  { type = "contains",      value = "chunk 1",  weight = 2.0   },
+  { type = "contains",      value = "chunk 2",  weight = 2.0   },
+  { type = "not_contains",  value = "[DONE]",   weight = 1.0   },
+  { type = "latency_under", ms    = 5000        },
+]
+
+# ── Test 2: auto-detected SSE (content-type header) ──────────────────────────
+# When the server returns Content-Type: text/event-stream, SSE accumulation is
+# enabled automatically — no need to set `sse = true`.
+
+[[tests]]
+name           = "sse-auto-detect"
+description    = "SSE auto-detected via Content-Type: text/event-stream"
+method         = "GET"
+path           = "/stream"
+sse_timeout_ms = 2000
+
+assert = [
+  { type = "http_status", code  = 200      },
+  { type = "contains",    value = "chunk", weight = 3.0 },
+]

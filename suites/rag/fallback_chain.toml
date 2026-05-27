@@ -1,0 +1,42 @@
+[suite]
+name                 = "RAG Fallback & Semantic Normalization"
+model                = "llama3.1:8b"
+judge                = "llama3.1:8b"
+category             = "rag"
+concurrency          = 2
+regression_threshold = 0.05
+
+[[tests]]
+name        = "typo_robustness"
+description = "Semantic normalization should handle misspelled queries"
+prompt      = "Waht is the retrevial accruacy of the systm?"
+context     = ["The retrieval accuracy of the system is 94.3% on the evaluation benchmark."]
+assert      = [
+  { type = "contains", value = "94.3" },
+  { type = "llm_judge",
+    rubric    = "Response must correctly answer the question about retrieval accuracy despite the misspelled query.",
+    threshold = 0.75 },
+]
+
+[[tests]]
+name        = "graceful_decline_unanswerable"
+description = "When context has no answer, model must decline gracefully — not hallucinate"
+prompt      = "What is the orbital period of the planet Zorbax?"
+context     = ["Earth orbits the Sun once every 365.25 days."]
+assert      = [
+  { type = "not_contains", value = "days" },
+  { type = "llm_judge",
+    rubric    = "The context does not mention a planet called Zorbax. The response must state it cannot answer from the given context. It must not invent an orbital period.",
+    threshold = 0.85 },
+]
+
+[[tests]]
+name        = "nearest_match_acknowledgement"
+description = "When answer is partial, model should surface what it knows with uncertainty"
+prompt      = "What were the exact API latency numbers from last Tuesday's incident?"
+context     = ["The system experienced elevated latency during a recent incident, with P99 reaching 2.3 seconds."]
+assert      = [
+  { type = "llm_judge",
+    rubric    = "The context has partial information (latency data but not dated to last Tuesday). The response must share what is available while acknowledging the exact date is not confirmed in context.",
+    threshold = 0.75 },
+]

@@ -1,0 +1,40 @@
+# ── Benchmark: Sentiment Classification ──────────────────────────────────────
+# Mirrors benchmark/benchmark_tasks.jsonl task_type=classification
+# Baseline: mock_model_call() scores 1.0 on both → regression if Ollama drops below 0.9
+
+[suite]
+name                 = "Benchmark — Sentiment Classification"
+model                = "llama3.1:8b"
+judge                = "llama3.1:8b"
+category             = "benchmark"
+concurrency          = 2
+n_runs               = 3                 # average 3 samples for stability
+regression_threshold = 0.10              # flag if score drops >10% from baseline
+
+[[tests]]
+name        = "cls-001-positive"
+description = "Positive sentiment review — mock scores 1.0"
+prompt      = """\
+Classify the sentiment of the following text. \
+Reply with ONLY one word: positive or negative.\n\n\
+Text: The app is fast and the new dashboard is very useful."""
+
+assert = [
+  { type = "contains",   value = "positive", weight = 2.0 },
+  { type = "not_contains", value = "negative" },
+  { type = "regex",      value = r"(?i)^positive" },
+]
+
+[[tests]]
+name        = "cls-002-negative"
+description = "Negative sentiment review — mock scores 1.0"
+prompt      = """\
+Classify the sentiment of the following text. \
+Reply with ONLY one word: positive or negative.\n\n\
+Text: Frequent timeouts and poor support made this unusable."""
+
+assert = [
+  { type = "contains",   value = "negative", weight = 2.0 },
+  { type = "not_contains", value = "positive" },
+  { type = "regex",      value = r"(?i)^negative" },
+]

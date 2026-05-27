@@ -1,0 +1,67 @@
+# ── snapshot.toml ─────────────────────────────────────────────────────────────
+# Demonstrates the `snapshot` assertion type.
+#
+# First run  → golden file is CREATED from the model's output; always passes.
+# Later runs → output must match the stored golden exactly (after trim).
+# Re-generate: crucible run -s suites/examples/snapshot.toml --update-snapshots
+#
+# This suite uses the script provider with a tiny Python echo stub so it works
+# offline without a running Ollama instance.
+
+[suite]
+name        = "Snapshot examples"
+model       = "mock"
+category    = "examples"
+concurrency = 1
+
+[suite.script]
+cmd  = "python3"
+args = ["-c", """
+import sys, json
+prompt = sys.stdin.read().strip()
+# Deterministic responses keyed by prompt keyword
+if 'greeting' in prompt.lower():
+    print('Hello! How can I help you today?')
+elif 'status' in prompt.lower():
+    print('All systems operational. Version 2.1.0.')
+elif 'json' in prompt.lower():
+    print(json.dumps({'status': 'ok', 'version': '2.1.0', 'items': [1, 2, 3]}))
+else:
+    print('Acknowledged.')
+"""]
+
+# ── Test 1: plain text snapshot ───────────────────────────────────────────────
+
+[[tests]]
+name        = "greeting-snapshot"
+description = "Golden: model greeting response (first run creates the file)"
+prompt      = "Provide a short greeting"
+
+assert = [
+  { type = "snapshot", file = "snapshots/greeting.txt", weight = 5.0 },
+]
+
+# ── Test 2: status line snapshot ──────────────────────────────────────────────
+
+[[tests]]
+name        = "status-snapshot"
+description = "Golden: status line — version must not drift unexpectedly"
+prompt      = "What is the current status?"
+
+assert = [
+  { type = "snapshot",      file = "snapshots/status.txt",   weight = 5.0 },
+  { type = "contains",      value = "operational",            weight = 1.0 },
+]
+
+# ── Test 3: JSON output snapshot ──────────────────────────────────────────────
+
+[[tests]]
+name        = "json-output-snapshot"
+description = "Golden: JSON response shape — catches schema drift"
+prompt      = "Respond in JSON format"
+
+assert = [
+  { type = "snapshot",    file = "snapshots/status.json",    weight = 5.0 },
+  { type = "json_field",  path = "$.status", equals = "ok",  weight = 2.0 },
+  { type = "json_field",  path = "$.version",                weight = 1.0 },
+]

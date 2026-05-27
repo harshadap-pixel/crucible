@@ -1,0 +1,83 @@
+# ── JSON field-level assertion examples ──────────────────────────────────────
+# Demonstrates the `json_field` assertion type.
+# Navigate dot/bracket paths and assert on nested values.
+#
+# Path syntax:
+#   $.field          → top-level key
+#   $.a.b.c          → nested keys
+#   $[0]             → first element of root array
+#   $.items[2].name  → mixed nested + index
+#
+# Operators:
+#   equals    → exact string match after JSON serialization
+#   contains  → substring match
+#   (neither) → just checks the field exists
+#
+# Run (requires script provider returning JSON):
+#   crucible run suites/examples/json_field.toml
+
+[suite]
+name        = "JSON Field Assertion Examples"
+model       = "mock"              # uses script provider below, model is irrelevant
+judge       = "llama3.1:8b"
+concurrency = 2
+
+[suite.script]
+cmd  = "python3"
+args = ["-c", """
+import sys, json
+inp = json.load(sys.stdin) if False else json.loads(input())
+# Deterministic mock: echo back a canned JSON response based on task_type
+responses = {
+    'user_profile': '{"user":{"id":42,"name":"Alice","role":"admin"},"active":true}',
+    'order_list':   '{"orders":[{"id":"ORD-001","status":"shipped"},{"id":"ORD-002","status":"pending"}],"total":2}',
+    'error_case':   '{"error":{"code":404,"message":"Not found"},"success":false}',
+}
+task = inp.get('task','user_profile')
+print(responses.get(task, '{}'))
+"""]
+
+# ── Test 1: nested object field ────────────────────────────────────────────────
+[[tests]]
+name        = "user-role-is-admin"
+description = "$.user.role must equal 'admin'"
+prompt      = '{"task":"user_profile"}'
+assert      = [
+    { type = "json_field", path = "$.user.role",   equals = "admin" },
+    { type = "json_field", path = "$.user.name",   equals = "Alice" },
+    { type = "json_field", path = "$.active",      equals = "true"  },  # booleans serialize to "true"/"false"
+]
+
+# ── Test 2: array element access ───────────────────────────────────────────────
+[[tests]]
+name        = "first-order-is-shipped"
+description = "$.orders[0].status must equal 'shipped'"
+prompt      = '{"task":"order_list"}'
+assert      = [
+    { type = "json_field", path = "$.orders[0].status", equals   = "shipped" },
+    { type = "json_field", path = "$.orders[1].status", equals   = "pending" },
+    { type = "json_field", path = "$.orders[0].id",     contains = "ORD"     },  # substring match
+    { type = "json_field", path = "$.total",             equals   = "2"       },  # numbers serialize as strings
+]
+
+# ── Test 3: field existence check (no equals/contains) ────────────────────────
+[[tests]]
+name        = "error-fields-exist"
+description = "$.error.code and $.error.message must exist"
+prompt      = '{"task":"error_case"}'
+assert      = [
+    { type = "json_field", path = "$.error"          },         # just checks key exists
+    { type = "json_field", path = "$.error.code",    equals = "404" },
+    { type = "json_field", path = "$.error.message", contains = "found" },
+    { type = "json_field", path = "$.success",        equals = "false"  },
+]
+
+# ── Test 4: combined with latency ─────────────────────────────────────────────
+[[tests]]
+name        = "fast-json-response"
+description = "JSON field check + latency budget together"
+prompt      = '{"task":"user_profile"}'
+assert      = [
+    { type = "json_field",   path = "$.user.id", equals = "42" },
+    { type = "latency_under", ms = 5000 },
+]

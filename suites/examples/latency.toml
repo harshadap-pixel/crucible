@@ -1,0 +1,58 @@
+# ── Latency assertion examples ────────────────────────────────────────────────
+# Demonstrates the `latency_under` assertion type.
+# Tests that model responses arrive within a budget.
+#
+# Run:
+#   crucible run suites/examples/latency.toml
+#
+# This suite runs against a local Ollama model.
+# For script/HTTP providers, latency reflects end-to-end call time.
+
+[suite]
+name        = "Latency Budget Tests"
+model       = "llama3.2:1b"       # fast small model for tight latency budgets
+judge       = "llama3.1:8b"
+concurrency = 2
+n_runs      = 3                   # average over 3 samples for stable latency
+
+# ── Tier 1: tight budget — simple factual lookup ───────────────────────────────
+[[tests]]
+name        = "capital-city-fast"
+description = "Single-fact lookup must respond within 3 seconds"
+prompt      = "What is the capital of France? Answer in one word."
+assert      = [
+    { type = "contains",      value = "Paris"   },
+    { type = "latency_under", ms = 3000,  weight = 2.0 },  # latency is 2× weighted
+]
+
+# ── Tier 2: medium budget — short generation ───────────────────────────────────
+[[tests]]
+name        = "haiku-medium"
+description = "Short creative generation within 8 seconds"
+prompt      = "Write a haiku about clouds."
+assert      = [
+    { type = "regex",         value = "\\d"            },  # haiku has syllable numbers implied
+    { type = "latency_under", ms = 8000 },
+]
+
+# ── Tier 3: budget intentionally tight — expected to show 0 score on slow GPUs ─
+# Useful as a canary: if this passes, the GPU is fast enough for real-time use.
+[[tests]]
+name        = "hello-world-1s"
+description = "Canary: trivial response under 1 second (GPU-class hardware only)"
+prompt      = "Say exactly: hello"
+assert      = [
+    { type = "contains",      value = "hello" },
+    { type = "latency_under", ms = 1000 },  # very tight — will fail on CPU
+]
+
+# ── Tier 4: relaxed budget — longer reasoning task ────────────────────────────
+[[tests]]
+name        = "reasoning-30s"
+description = "Multi-step reasoning must complete within 30 seconds"
+prompt      = "List three pros and three cons of microservices architecture. Be concise."
+assert      = [
+    { type = "contains",      value = "pros"            },
+    { type = "contains",      value = "cons"            },
+    { type = "latency_under", ms = 30000               },
+]

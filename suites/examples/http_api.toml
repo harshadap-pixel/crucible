@@ -1,0 +1,137 @@
+# ── HTTP endpoint test examples ───────────────────────────────────────────────
+# Demonstrates the HTTP provider: tests call a live API directly.
+# No LLM or Ollama required — pure API contract testing with AI-aware assertions.
+#
+# Configuration:
+#   [suite.http]      → base_url, headers, timeout_ms
+#   test.method       → GET | POST | PUT | DELETE
+#   test.path         → relative path appended to base_url
+#   test.body         → request body (sent as-is, Content-Type: application/json)
+#   test.headers      → per-test header overrides (inline table syntax)
+#
+# Assertion types that work well for HTTP:
+#   http_status   → checks response status code
+#   contains      → checks response body for substring
+#   json_field    → navigates JSON response body
+#   latency_under → checks end-to-end response time
+#   regex         → pattern match on response body
+#
+# This example uses httpbin.org so it works without a local server.
+# Run: crucible run -s suites/examples/http_api.toml
+
+[suite]
+name        = "HTTP API Tests (httpbin demo)"
+model       = "mock"              # model unused in HTTP-only tests
+judge       = "llama3.1:8b"
+concurrency = 4
+
+[suite.http]
+base_url   = "https://httpbin.org"
+timeout_ms = 10000
+
+[suite.http.headers]
+Accept = "application/json"
+
+# ── GET tests ────────────────────────────────────────────────────────────────
+
+[[tests]]
+name        = "health-check-200"
+description = "GET /get must return HTTP 200"
+method      = "GET"
+path        = "/get"
+assert      = [
+    { type = "http_status",   code = 200   },
+    { type = "latency_under", ms = 5000    },
+    { type = "json_field",    path = "$.url" },
+]
+
+[[tests]]
+name        = "404-for-missing"
+description = "GET non-existent path returns HTTP 404"
+method      = "GET"
+path        = "/status/404"
+assert      = [
+    { type = "http_status", code = 404 },
+]
+
+[[tests]]
+name        = "ip-field-in-response"
+description = "GET /ip returns a JSON with an 'origin' field"
+method      = "GET"
+path        = "/ip"
+assert      = [
+    { type = "http_status", code = 200                        },
+    { type = "json_field",  path = "$.origin"                 },
+    { type = "regex",       value = "\\d+\\.\\d+\\.\\d+\\.\\d+" },
+]
+
+# ── POST tests ───────────────────────────────────────────────────────────────
+
+[[tests]]
+name        = "post-with-body"
+description = "POST /post echoes body back in response"
+method      = "POST"
+path        = "/post"
+body        = '{"query":"SELECT * FROM users","limit":10}'
+assert      = [
+    { type = "http_status",   code = 200      },
+    { type = "json_field",    path = "$.json.limit",  equals = "10"       },
+    { type = "json_field",    path = "$.json.query",  contains = "SELECT" },
+    { type = "latency_under", ms = 8000                                   },
+]
+
+# ── Header passing ───────────────────────────────────────────────────────────
+# Note: use inline table syntax for per-test headers to keep valid TOML.
+# Quoted keys allow hyphens: { "X-My-Header" = "value" }
+
+[[tests]]
+name        = "custom-header-echoed"
+description = "Custom headers appear in echoed response"
+method      = "GET"
+path        = "/headers"
+headers     = { "X-Crucible-Test" = "header-echo-check" }
+assert      = [
+    { type = "http_status", code = 200                                            },
+    { type = "json_field",  path = "$.headers.X-Crucible-Test", equals = "header-echo-check" },
+]
+
+# ── Timeout / slow endpoint ──────────────────────────────────────────────────
+
+[[tests]]
+name        = "slow-response-within-budget"
+description = "2-second delay endpoint must complete within 5-second budget"
+method      = "GET"
+path        = "/delay/2"
+assert      = [
+    { type = "http_status",   code = 200  },
+    { type = "latency_under", ms = 5000   },
+]
+
+# ── mp-web-api template (commented out — uncomment when service is running) ───
+#
+# [suite.http]
+# base_url   = "http://localhost:3000"
+# timeout_ms = 15000
+#
+# [suite.http.headers]
+# Content-Type  = "application/json"
+# Authorization = "Bearer <your-local-dev-token>"
+#
+# [[tests]]
+# name   = "nl2sql-valid-query"
+# method = "POST"
+# path   = "/api/ai/nl2sql"
+# body   = '{"question":"Show me top 10 users","vendorId":"test-vendor"}'
+# assert = [
+#     { type = "http_status",   code = 200            },
+#     { type = "json_field",    path = "$.sql", contains = "SELECT" },
+#     { type = "json_field",    path = "$.sql", contains = "LIMIT"  },
+#     { type = "latency_under", ms = 10000             },
+# ]
+#
+# [[tests]]
+# name   = "nl2sql-injection-rejected"
+# method = "POST"
+# path   = "/api/ai/nl2sql"
+# body   = '{"question":"DROP TABLE users","vendorId":"test-vendor"}'
+# assert = [{ type = "http_status", code = 400 }]

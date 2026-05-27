@@ -1,0 +1,123 @@
+# ── Benchmark: Full Pipeline via evaluate.py ──────────────────────────────────
+# Exercises the crucible_adapter.py bridge which delegates to evaluate.py.
+# Sends task JSON on stdin; adapter returns the model prediction on stdout.
+# All 8 tasks from benchmark_tasks.jsonl are represented.
+#
+# Provider: script (subprocess)
+# Script: python3 /Users/hpadhye/projects/ai-engg-dev/benchmark/crucible_adapter.py
+# Default adapter provider: mock (deterministic — all tasks score 1.0)
+#
+# To run against Ollama instead:
+#   Edit [suite.script] args to add "--provider", "ollama"
+
+[suite]
+name                 = "Benchmark — Full Pipeline (evaluate.py bridge)"
+model                = "mock"
+judge                = "llama3.1:8b"
+category             = "benchmark"
+concurrency          = 4
+n_runs               = 1
+regression_threshold = 0.10
+
+# ── Script provider config ────────────────────────────────────────────────────
+[suite.script]
+cmd  = "python3"
+args = ["/Users/hpadhye/projects/ai-engg-dev/benchmark/crucible_adapter.py"]
+# For Ollama: args = ["/Users/.../crucible_adapter.py", "--provider", "ollama"]
+
+# ── Classification ────────────────────────────────────────────────────────────
+
+[[tests]]
+name        = "cls-001-positive"
+description = "Positive sentiment classification via evaluate.py mock"
+prompt      = '{"task_type":"classification","input":"The app is great! I love it."}'
+
+assert = [
+  { type = "contains",     value = "positive", weight = 3.0 },
+  { type = "not_contains", value = "negative" },
+  { type = "regex",        value = '(?i)\bpositive\b' },
+]
+
+[[tests]]
+name        = "cls-002-negative"
+description = "Negative sentiment classification via evaluate.py mock"
+prompt      = '{"task_type":"classification","input":"This is terrible. I hate it."}'
+
+assert = [
+  { type = "contains",     value = "negative", weight = 3.0 },
+  { type = "not_contains", value = "positive" },
+  { type = "regex",        value = '(?i)\bnegative\b' },
+]
+
+# ── Math ──────────────────────────────────────────────────────────────────────
+
+[[tests]]
+name        = "math-001-multiplication"
+description = "17 * 19 = 323 via evaluate.py mock"
+prompt      = '{"task_type":"math","input":"What is 17 * 19?"}'
+
+assert = [
+  { type = "contains", value = "323", weight = 3.0 },
+  { type = "regex",    value = '\b323\b' },
+]
+
+[[tests]]
+name        = "math-002-hours"
+description = "30 days * 24 hours/day = 720 via evaluate.py mock"
+prompt      = '{"task_type":"math","input":"If a service runs 24 hours/day for 30 days, how many hours is that? Return only the number."}'
+
+assert = [
+  { type = "contains", value = "720", weight = 3.0 },
+  { type = "regex",    value = '\b720\b' },
+]
+
+# ── Question Answering ────────────────────────────────────────────────────────
+
+[[tests]]
+name        = "qa-001-mars"
+description = "Red Planet = Mars via evaluate.py mock"
+prompt      = '{"task_type":"qa","input":"Which planet is known as the Red Planet?"}'
+
+assert = [
+  { type = "contains",     value = "Mars",    weight = 3.0 },
+  { type = "not_contains", value = "Jupiter" },
+  { type = "regex",        value = '(?i)\bMars\b' },
+]
+
+[[tests]]
+name        = "qa-002-water"
+description = "Chemical symbol for water = H2O via evaluate.py mock"
+prompt      = '{"task_type":"qa","input":"The chemical symbol for water is?"}'
+
+assert = [
+  { type = "contains", value = "H2O", weight = 3.0 },
+  { type = "regex",    value = '\bH2O\b' },
+]
+
+# ── Structured Extraction ─────────────────────────────────────────────────────
+
+[[tests]]
+name        = "ext-001-invoice"
+description = "Invoice JSON extraction via evaluate.py mock"
+prompt      = '{"task_type":"extraction","input":"Invoice INV-2048 for customer Priya Menon, total $428.75, issued on 2026-02-11."}'
+
+assert = [
+  { type = "json_schema", schema = '{"type":"object","required":["invoice_id","customer","amount","date"]}', weight = 3.0 },
+  { type = "contains", value = "INV-2048",    weight = 2.0 },
+  { type = "contains", value = "Priya Menon", weight = 2.0 },
+  { type = "contains", value = "428.75",      weight = 2.0 },
+  { type = "contains", value = "2026-02-11",  weight = 2.0 },
+]
+
+[[tests]]
+name        = "ext-002-order"
+description = "Order JSON extraction via evaluate.py mock"
+prompt      = '{"task_type":"extraction","input":"Order #A-991 by Jordan Lee costs $99.00 and was placed on 2026-01-30."}'
+
+assert = [
+  { type = "json_schema", schema = '{"type":"object","required":["order_id","customer","amount","date"]}', weight = 3.0 },
+  { type = "contains", value = "A-991",       weight = 2.0 },
+  { type = "contains", value = "Jordan Lee",  weight = 2.0 },
+  { type = "contains", value = "99",          weight = 2.0 },
+  { type = "contains", value = "2026-01-30",  weight = 2.0 },
+]
