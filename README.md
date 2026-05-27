@@ -32,6 +32,7 @@ SUMMARY   5/5 passed   avg score: 0.954   ✓ no regressions
 | Ollama-native | ✅ | ✅ | 🟡 | ✅ |
 | RAG eval | 🟡 | ✅ | ✅ | ✅ |
 | Agent + safety | ✅ | ✅ | ❌ | ✅ |
+| **Full OWASP LLM Top 10** | 🟡 partial | 🟡 partial | ❌ | ✅ all 10 |
 | **Mechanism detection** | ❌ | ❌ | ❌ | ✅ |
 | **MoE detection** | ❌ | ❌ | ❌ | ✅ |
 | **RAG fallback probes** | ❌ | ❌ | ❌ | ✅ |
@@ -172,12 +173,38 @@ PIPELINE MECHANISMS (from config)
 
 ## Built-in Suites
 
+### General
+
 | Suite | Path | Coverage |
 |---|---|---|
 | Default eval | `suites/default.toml` | Factual, JSON, instruction-following, basic safety |
-| OWASP LLM01 | `suites/safety/owasp_llm01_injection.toml` | Prompt injection (direct + indirect) |
 | RAG faithfulness | `suites/rag/faithfulness.toml` | Groundedness, no hallucination, context relevance |
-| RAG fallback | `suites/rag/fallback_chain.toml` | Typo robustness, graceful decline, semantic normalization |
+| RAG fallback | `suites/rag/fallback_chain.toml` | Typo robustness, graceful decline, semantic normalisation |
+
+### OWASP LLM Top 10 — Full Coverage
+
+54 probes across all 10 risk categories. Run any suite individually or the whole directory at once:
+
+```bash
+# Run a single risk category
+crucible run --suite suites/safety/owasp_llm06_excessive_agency.toml
+
+# Run the entire OWASP Top 10
+crucible run --dir suites/safety --category safety
+```
+
+| # | Risk | Suite | Probes |
+|---|---|---|---|
+| LLM01 | Prompt Injection | `suites/safety/owasp_llm01_injection.toml` | Direct injection, role hijack, indirect via context, delimiter confusion, system prompt exfiltration |
+| LLM02 | Sensitive Information Disclosure | `suites/safety/owasp_llm02_sensitive_disclosure.toml` | PII leakage from context, credential exposure, training data probing, cross-user isolation |
+| LLM03 | Supply Chain | `suites/safety/owasp_llm03_supply_chain.toml` | Malicious plugin output, third-party authority spoof, poisoned knowledge base, provenance uncertainty |
+| LLM04 | Data & Model Poisoning | `suites/safety/owasp_llm04_data_poisoning.toml` | Fact overwrite via context, authority injection, backdoor triggers, gradual belief manipulation, bias injection |
+| LLM05 | Improper Output Handling | `suites/safety/owasp_llm05_output_handling.toml` | SQL injection in generated queries, XSS in HTML output, shell injection, template injection, path traversal |
+| LLM06 | Excessive Agency | `suites/safety/owasp_llm06_excessive_agency.toml` | Destructive actions without confirmation, bulk email, financial transfers, self-modification, production actions |
+| LLM07 | System Prompt Leakage | `suites/safety/owasp_llm07_system_prompt_leakage.toml` | Direct requests, base64/translation extraction, forbidden topic enumeration, roleplay extraction |
+| LLM08 | Vector & Embedding Weaknesses | `suites/safety/owasp_llm08_vector_weaknesses.toml` | Adversarial chunk hijack, authority spoof in retrieved docs, cross-user leakage, conflicting/stale retrieval |
+| LLM09 | Misinformation | `suites/safety/owasp_llm09_misinformation.toml` | Hallucinated citations, fabricated statistics, medical/legal/financial advice, fabricated quotes |
+| LLM10 | Unbounded Consumption | `suites/safety/owasp_llm10_unbounded_consumption.toml` | Token amplification, recursive expansion, context stuffing, infinite loop traps, latency SLA enforcement |
 
 ---
 
@@ -201,10 +228,10 @@ crucible compare a1b2c3d4 e5f6g7h8
 
 ## Roadmap
 
-- **v0.1** (now) — Core eval runner, mechanism detection, SQLite regression, built-in suites
+- **v0.1** (now) — Core eval runner, mechanism detection, SQLite regression, full OWASP LLM Top 10
 - **v0.2** — RAG IR metrics (Recall@k, MRR), long-context needle tests, latency as first-class metric
-- **v0.3** — Full OWASP LLM Top 10 probes, agent multi-turn loop eval, LlamaGuard integration
-- **v0.4** — MMLU/HumanEval benchmark runners, statistical significance, cost tracking
+- **v0.3** — Agent multi-turn loop eval, LlamaGuard integration, cost tracking ($/run)
+- **v0.4** — MMLU/HumanEval benchmark runners, statistical significance, JUnit XML output
 
 ---
 
