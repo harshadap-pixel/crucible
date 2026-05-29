@@ -1,9 +1,9 @@
 pub mod assertions;
-pub mod leaderboard;
 pub mod cli;
 pub mod config;
 pub mod detect;
 pub mod discover;
+pub mod leaderboard;
 pub mod providers;
 pub mod regression;
 pub mod report;

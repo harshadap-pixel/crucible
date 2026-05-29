@@ -391,9 +391,7 @@ async fn run_suite(
             }
             println!("  Run ID: {}", run_id.dimmed());
             if !args.baseline {
-                println!(
-                    "  Tip: re-run with --baseline to pin this as the regression baseline\n"
-                );
+                println!("  Tip: re-run with --baseline to pin this as the regression baseline\n");
             }
         }
     }

@@ -79,12 +79,7 @@ pub async fn run(
 
         println!(
             "  {} {:<3}  {:<32}  {}  {:>5}/{}",
-            medal,
-            rank,
-            o.model,
-            score_colored,
-            o.passed,
-            o.total,
+            medal, rank, o.model, score_colored, o.passed, o.total,
         );
     }
 
