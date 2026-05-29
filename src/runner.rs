@@ -17,7 +17,7 @@ use crate::store::{
     Db,
 };
 
-// ── Public result type ────────────────────────────────────────────────────────
+// ── Public result types ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct TestResult {
@@ -32,6 +32,20 @@ pub struct TestResult {
     pub description: Option<String>,
 }
 
+/// Outcome of running a suite against one model — returned by [`execute_suite`].
+pub struct SuiteOutcome {
+    pub model: String,
+    pub suite_name: String,
+    pub regression_threshold: f64,
+    pub results: Vec<TestResult>,
+    pub avg_score: f64,
+    pub passed: u32,
+    pub total: u32,
+    pub total_tokens: u64,
+    /// `true` when `--fail-fast` triggered early termination.
+    pub stopped: bool,
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub async fn run(args: RunArgs) -> Result<()> {
@@ -39,6 +53,11 @@ pub async fn run(args: RunArgs) -> Result<()> {
     let suite_paths = resolve_suites(&args)?;
     if suite_paths.is_empty() {
         anyhow::bail!("No suite files found. Check --suite / --dir path.");
+    }
+
+    // Leaderboard mode: --models model1,model2,...
+    if !args.models.is_empty() {
+        return crate::leaderboard::run(args, suite_paths, cli_vars).await;
     }
 
     let client = Arc::new(OllamaClient::new(&args.ollama_url));
@@ -55,7 +74,7 @@ pub async fn run(args: RunArgs) -> Result<()> {
 
 // ── Suite resolution ──────────────────────────────────────────────────────────
 
-fn resolve_suites(args: &RunArgs) -> Result<Vec<String>> {
+pub fn resolve_suites(args: &RunArgs) -> Result<Vec<String>> {
     if let Some(ref dir) = args.dir {
         let paths = collect_toml_files(dir);
         if let Some(ref cat) = args.category {
@@ -97,29 +116,34 @@ fn collect_toml_recursive(dir: &std::path::Path, out: &mut Vec<String>) {
     }
 }
 
-// ── Single-suite runner ───────────────────────────────────────────────────────
+// ── Suite executor (pure — no DB writes, no final output) ────────────────────
 
-async fn run_suite(
+/// Run every test in a suite for one model and return the raw results.
+///
+/// `model_override` — when `Some`, overrides the suite's `model` field.
+/// When `None`, `args.model` is used (or the suite default if that is also `None`).
+pub async fn execute_suite(
     suite_path: &str,
+    model_override: Option<&str>,
     args: &RunArgs,
     cli_vars: &HashMap<String, String>,
     client: &Arc<OllamaClient>,
-) -> Result<bool> {
+) -> Result<SuiteOutcome> {
     let mut suite = config::load(suite_path)?;
-    if let Some(ref m) = args.model {
+    if let Some(m) = model_override {
+        suite.suite.model = m.to_string();
+    } else if let Some(ref m) = args.model {
         suite.suite.model = m.clone();
     }
     if let Some(ref j) = args.judge {
         suite.suite.judge = j.clone();
     }
 
-    // Directory of the suite file — used to resolve snapshot paths
     let suite_dir = std::path::Path::new(suite_path)
         .parent()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| ".".to_string());
 
-    // --filter: keep only tests whose name contains the pattern
     if let Some(ref pat) = args.filter {
         suite.tests.retain(|t| t.name.contains(pat.as_str()));
         if suite.tests.is_empty() {
@@ -127,12 +151,21 @@ async fn run_suite(
                 "  {} No tests match --filter '{pat}' in {suite_path}",
                 "⚠".yellow()
             );
-            return Ok(false);
+            return Ok(SuiteOutcome {
+                model: suite.suite.model,
+                suite_name: suite.suite.name,
+                regression_threshold: suite.suite.regression_threshold,
+                results: Vec::new(),
+                avg_score: 0.0,
+                passed: 0,
+                total: 0,
+                total_tokens: 0,
+                stopped: false,
+            });
         }
     }
 
     let ollama_url = args.ollama_url.clone();
-    // HTTP provider and script provider skip Ollama health check
     let is_ollama =
         suite.suite.script.is_none() && suite.suite.http.is_none() && suite.suite.model != "mock";
 
@@ -140,7 +173,6 @@ async fn run_suite(
         anyhow::bail!("Ollama not reachable at {ollama_url}. Is it running?");
     }
 
-    // MoE n_runs multiplier (Ollama only)
     let suite_n_runs = if !is_ollama {
         args.n_runs.max(suite.suite.n_runs)
     } else {
@@ -179,7 +211,7 @@ async fn run_suite(
     let script_arc = Arc::new(suite.suite.script.clone());
     let http_arc = Arc::new(http_cfg);
     let cli_vars_arc = Arc::new(cli_vars.clone());
-    let suite_dir_arc = Arc::new(suite_dir.clone());
+    let suite_dir_arc = Arc::new(suite_dir);
     let update_snapshots = args.update_snapshots;
     let retry = args.retry;
     let fail_fast = args.fail_fast;
@@ -195,8 +227,6 @@ async fn run_suite(
         let bar = bar.clone();
         let extra_vars = cli_vars_arc.clone();
         let suite_dir = suite_dir_arc.clone();
-
-        // Per-test n_runs takes priority over suite-level
         let effective_n = test.n_runs.unwrap_or(suite_n_runs);
 
         handles.push(tokio::spawn(async move {
@@ -239,9 +269,6 @@ async fn run_suite(
     }
     bar.finish_and_clear();
 
-    // ── Persist results ───────────────────────────────────────────────────────
-    let run_id = Uuid::new_v4().to_string()[..8].to_string();
-    let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let passed = results.iter().filter(|r| r.passed).count() as u32;
     let avg_score = if results.is_empty() {
         0.0
@@ -253,20 +280,47 @@ async fn run_suite(
         .map(|r| r.input_tokens as u64 + r.output_tokens as u64)
         .sum();
 
+    Ok(SuiteOutcome {
+        model: (*model).clone(),
+        suite_name: suite.suite.name,
+        regression_threshold: suite.suite.regression_threshold,
+        results,
+        avg_score,
+        passed,
+        total: total as u32,
+        total_tokens,
+        stopped,
+    })
+}
+
+// ── Single-suite runner (with DB persistence + terminal output) ───────────────
+
+async fn run_suite(
+    suite_path: &str,
+    args: &RunArgs,
+    cli_vars: &HashMap<String, String>,
+    client: &Arc<OllamaClient>,
+) -> Result<bool> {
+    let outcome = execute_suite(suite_path, None, args, cli_vars, client).await?;
+
+    // ── Persist results ───────────────────────────────────────────────────────
+    let run_id = Uuid::new_v4().to_string()[..8].to_string();
+    let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
     let db = Db::open()?;
     db.insert_run(&RunRecord {
         id: run_id.clone(),
-        suite_name: suite.suite.name.clone(),
-        model: suite.suite.model.clone(),
+        suite_name: outcome.suite_name.clone(),
+        model: outcome.model.clone(),
         timestamp: timestamp.clone(),
         is_baseline: false,
-        total_tests: total as u32,
-        passed_tests: passed,
-        avg_score,
-        total_tokens,
+        total_tests: outcome.total,
+        passed_tests: outcome.passed,
+        avg_score: outcome.avg_score,
+        total_tokens: outcome.total_tokens,
     })?;
 
-    for r in &results {
+    for r in &outcome.results {
         db.insert_test_result(&TestRecord {
             run_id: run_id.clone(),
             test_name: r.test_name.clone(),
@@ -282,17 +336,17 @@ async fn run_suite(
 
     // ── Per-suite baseline auto-set ───────────────────────────────────────────
     if args.baseline {
-        db.set_baseline(&run_id, &suite.suite.name)?;
+        db.set_baseline(&run_id, &outcome.suite_name)?;
         println!(
             "  {} Run {run_id} marked as baseline for '{}'.",
             "●".yellow(),
-            suite.suite.name
+            outcome.suite_name
         );
     }
 
     // ── Per-suite baseline comparison ─────────────────────────────────────────
     let baseline_results = if args.compare {
-        db.current_baseline(&suite.suite.name)?
+        db.current_baseline(&outcome.suite_name)?
             .map(|b| db.get_results_for_run(&b.id))
             .transpose()?
     } else {
@@ -304,37 +358,47 @@ async fn run_suite(
         "json" => print_json(
             &run_id,
             &timestamp,
-            &suite.suite.model,
-            &suite.suite.name,
-            &results,
+            &outcome.model,
+            &outcome.suite_name,
+            &outcome.results,
         ),
-        "sarif" => print_sarif(&suite.suite.name, &results),
+        "sarif" => print_sarif(&outcome.suite_name, &outcome.results),
         _ => {
             report::print_run(
                 &run_id,
                 &timestamp,
-                &suite.suite.model,
-                &suite.suite.name,
-                &results,
+                &outcome.model,
+                &outcome.suite_name,
+                &outcome.results,
                 baseline_results.as_deref(),
-                suite.suite.regression_threshold,
+                outcome.regression_threshold,
             );
-            if total_tokens > 0 {
+            if outcome.total_tokens > 0 {
                 println!(
                     "  Tokens: {} in / {} out (total {})",
-                    results.iter().map(|r| r.input_tokens as u64).sum::<u64>(),
-                    results.iter().map(|r| r.output_tokens as u64).sum::<u64>(),
-                    total_tokens,
+                    outcome
+                        .results
+                        .iter()
+                        .map(|r| r.input_tokens as u64)
+                        .sum::<u64>(),
+                    outcome
+                        .results
+                        .iter()
+                        .map(|r| r.output_tokens as u64)
+                        .sum::<u64>(),
+                    outcome.total_tokens,
                 );
             }
             println!("  Run ID: {}", run_id.dimmed());
             if !args.baseline {
-                println!("  Tip: re-run with --baseline to pin this as the regression baseline\n");
+                println!(
+                    "  Tip: re-run with --baseline to pin this as the regression baseline\n"
+                );
             }
         }
     }
 
-    Ok(stopped)
+    Ok(outcome.stopped)
 }
 
 // ── Output: JSON ──────────────────────────────────────────────────────────────
@@ -452,7 +516,7 @@ fn json_str(s: &str) -> String {
 
 // ── --var parsing ─────────────────────────────────────────────────────────────
 
-fn parse_vars(raw: &[String]) -> Result<HashMap<String, String>> {
+pub fn parse_vars(raw: &[String]) -> Result<HashMap<String, String>> {
     let mut map = HashMap::new();
     for kv in raw {
         let (k, v) = kv
@@ -578,7 +642,6 @@ async fn run_test(
                 let code = resp.status().as_u16();
 
                 // ── SSE accumulation ───────────────────────────────────────────
-                // Triggered by: explicit test.sse = true  OR  Content-Type: text/event-stream
                 let is_sse = test.sse
                     || resp
                         .headers()
@@ -696,39 +759,17 @@ async fn run_test(
 
 // ── SSE accumulator ───────────────────────────────────────────────────────────
 
-/// Read a Server-Sent Events response, collecting all `data:` payloads.
-/// Returns them joined by newlines. Stops when the stream ends or the
-/// timeout (ms) elapses — whichever comes first.
-///
-/// SSE format (per spec):
-///   data: <payload>\n\n
-///   data: <continuation>\n
-///   event: <type>\n
-///   id: <id>\n
-///   : <comment>\n
-///
-/// Only `data:` lines are included in the returned string.
 async fn accumulate_sse(resp: reqwest::Response, timeout_ms: u64) -> String {
     use tokio::time::{timeout, Duration};
 
     let mut lines: Vec<String> = Vec::new();
 
     let collect = async {
-        // reqwest doesn't expose a direct line reader; use bytes() chunks.
         let mut buf = String::new();
         let body = resp;
-
-        // We consume via text() which reads the full body — but for SSE over
-        // HTTP/1.1 with a server that closes the connection after events,
-        // this works correctly. For long-lived SSE streams, the timeout
-        // below will cut it off.
-        //
-        // If the server keeps the connection open indefinitely, clients
-        // should set sse_timeout_ms to a small value (e.g. 3000).
         if let Ok(text) = body.text().await {
             buf = text;
         }
-
         for line in buf.lines() {
             if let Some(payload) = line.strip_prefix("data:") {
                 let payload = payload.trim();
@@ -736,7 +777,6 @@ async fn accumulate_sse(resp: reqwest::Response, timeout_ms: u64) -> String {
                     lines.push(payload.to_string());
                 }
             }
-            // Skip: event:, id:, retry:, comments (:), blank lines
         }
     };
 

@@ -1,4 +1,5 @@
 pub mod assertions;
+pub mod leaderboard;
 pub mod cli;
 pub mod config;
 pub mod detect;

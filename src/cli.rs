@@ -97,6 +97,10 @@ pub struct RunArgs {
     #[arg(short, long)]
     pub judge: Option<String>,
 
+    /// Compare multiple models side-by-side (leaderboard mode): --models a,b,c
+    #[arg(long, value_delimiter = ',')]
+    pub models: Vec<String>,
+
     /// Ollama base URL
     #[arg(long, default_value = "http://localhost:11434")]
     pub ollama_url: String,

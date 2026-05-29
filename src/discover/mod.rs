@@ -68,6 +68,7 @@ pub async fn run(args: AutodiscoverArgs) -> Result<()> {
                 vars: vec![],
                 model: args.model.clone(),
                 judge: None,
+                models: vec![],
                 ollama_url: args.ollama_url.clone(),
                 concurrency: 4,
                 n_runs: 1,
