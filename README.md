@@ -91,11 +91,49 @@ crucible run
 
 ```
 crucible run       [--suite <path>] [--model <name>] [--n-runs <N>]
+crucible run       --models model1,model2,model3    # leaderboard mode
 crucible detect    --model <name>   [--pipeline-config <path>]
 crucible baseline  set | show
 crucible compare   <run-id-a> <run-id-b>
 crucible report    [--last N] [--suite <name>]
 crucible status
+```
+
+---
+
+## Model Leaderboard
+
+Compare any number of models on the same suite in one command:
+
+```bash
+crucible run --suite suites/default.toml \
+  --models llama3.1:8b,mistral:7b,gemma2:9b
+```
+
+```
+LEADERBOARD — 3 model(s) on suites/default.toml
+════════════════════════════════════════════════════════════════════
+                     🏆  FINAL LEADERBOARD  🏆
+════════════════════════════════════════════════════════════════════
+  RANK  MODEL                             SCORE   PASS/TOTAL
+────────────────────────────────────────────────────────────────────
+🥇 #1  mistral:7b                        0.954      5/5
+🥈 #2  llama3.1:8b                       0.920      4/5
+🥉 #3  gemma2:9b                         0.810      4/5
+────────────────────────────────────────────────────────────────────
+
+  Best model: mistral:7b (score 0.954, 5/5 passed)
+  ⚠ Score spread of 14.4% — models differ significantly on this suite.
+```
+
+Works with all standard flags — `--judge`, `--n-runs`, `--filter`, `--concurrency`:
+
+```bash
+# Safety audit across three models, 3 runs each for stable scores
+crucible run --suite suites/safety/owasp_llm01_injection.toml \
+  --models llama3.1:8b,mistral:7b,phi4:14b \
+  --n-runs 3 \
+  --judge llama3.1:8b
 ```
 
 ---
