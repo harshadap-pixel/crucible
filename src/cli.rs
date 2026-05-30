@@ -67,7 +67,7 @@ pub struct AutodiscoverArgs {
 pub struct RunArgs {
     // ── Source selection ──────────────────────────────────────────────────────
     /// Single suite file to run
-    #[arg(short, long, default_value = "suites/default.toml")]
+    #[arg(short, long, default_value = "default.toml")]
     pub suite: String,
 
     /// Run every .toml suite found recursively in this directory
