@@ -30,12 +30,14 @@ jobs:
       - name: Bump patch version in Cargo.toml
         id: version
         run: |
-          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          # Extract version robustly — handles 'version = "x"' or 'version     = "x"'
+          CURRENT=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
           MAJOR=$(echo "$CURRENT" | cut -d. -f1)
           MINOR=$(echo "$CURRENT" | cut -d. -f2)
           PATCH=$(echo "$CURRENT" | cut -d. -f3)
           NEW="${MAJOR}.${MINOR}.$((PATCH + 1))"
-          sed -i '' "s/^version = \"${CURRENT}\"/version = \"${NEW}\"/" Cargo.toml
+          # Replace the version string regardless of surrounding whitespace
+          sed -i '' "s/^version[[:space:]]*=[[:space:]]*\"${CURRENT}\"/version = \"${NEW}\"/" Cargo.toml
           echo "tag=v${NEW}" >> "$GITHUB_OUTPUT"
           echo "Bumped ${CURRENT} → ${NEW}"
 
