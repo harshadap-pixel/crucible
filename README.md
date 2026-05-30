@@ -47,19 +47,23 @@ SUMMARY   5/5 passed   avg score: 0.954   ✓ no regressions
 
 ### From GitHub Releases (recommended)
 
+Requires the [GitHub CLI](https://cli.github.com) (`gh`).
+
 ```bash
 # macOS Apple Silicon
-curl -L https://github.com/harshadap-pixel/crucible/releases/latest/download/crucible-aarch64-macos \
-  -o /usr/local/bin/crucible && chmod +x /usr/local/bin/crucible
+gh release download --repo harshadap-pixel/crucible \
+  --pattern "crucible-aarch64-macos" \
+  --output ~/.local/bin/crucible --clobber \
+  && chmod +x ~/.local/bin/crucible
 
 # macOS Intel
-curl -L https://github.com/harshadap-pixel/crucible/releases/latest/download/crucible-x86_64-macos \
-  -o /usr/local/bin/crucible && chmod +x /usr/local/bin/crucible
-
-# Linux x86_64
-curl -L https://github.com/harshadap-pixel/crucible/releases/latest/download/crucible-x86_64-linux \
-  -o /usr/local/bin/crucible && chmod +x /usr/local/bin/crucible
+gh release download --repo harshadap-pixel/crucible \
+  --pattern "crucible-x86_64-macos" \
+  --output ~/.local/bin/crucible --clobber \
+  && chmod +x ~/.local/bin/crucible
 ```
+
+Make sure `~/.local/bin` is on your `$PATH` (add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile if needed).
 
 ### From source
 
