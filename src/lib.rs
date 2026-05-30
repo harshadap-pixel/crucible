@@ -11,3 +11,4 @@ pub mod report;
 pub mod runner;
 pub mod safety;
 pub mod store;
+pub mod update;

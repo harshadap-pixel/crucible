@@ -34,6 +34,9 @@ pub enum Command {
 
     /// Scan a codebase for AI patterns and auto-generate + run eval suites
     Autodiscover(AutodiscoverArgs),
+
+    /// Update crucible to the latest release
+    Update,
 }
 
 // ── autodiscover ──────────────────────────────────────────────────────────────
