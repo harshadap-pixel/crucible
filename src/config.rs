@@ -243,6 +243,14 @@ pub enum Assertion {
         weight: f64,
     },
 
+    /// First token must arrive within this many milliseconds (Ollama only).
+    /// Fails (score=0) if ttft_ms > ms.
+    TtftUnder {
+        ms: u64,
+        #[serde(default)]
+        weight: f64,
+    },
+
     /// Navigate a JSON path and assert on the value at that node.
     /// path uses dot-notation: "$.field", "$.nested.field", "$[0].field"
     JsonField {
@@ -298,6 +306,7 @@ impl Assertion {
             Self::RefusalCheck { weight, .. } => *weight,
             Self::ToolNotCalled { weight, .. } => *weight,
             Self::LatencyUnder { weight, .. } => *weight,
+            Self::TtftUnder { weight, .. } => *weight,
             Self::JsonField { weight, .. } => *weight,
             Self::HttpStatus { weight, .. } => *weight,
             Self::Snapshot { weight, .. } => *weight,

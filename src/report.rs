@@ -28,14 +28,21 @@ pub fn print_run(
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::NOTHING);
     table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.set_header(vec![
+    // Only show TTFT column when at least one result has a non-zero value
+    let show_ttft = results.iter().any(|r| r.ttft_ms > 0);
+
+    let mut headers = vec![
         Cell::new("TEST").add_attribute(comfy_table::Attribute::Bold),
         Cell::new("SCORE").add_attribute(comfy_table::Attribute::Bold),
         Cell::new("STATUS").add_attribute(comfy_table::Attribute::Bold),
         Cell::new("LATENCY").add_attribute(comfy_table::Attribute::Bold),
-        Cell::new("DELTA").add_attribute(comfy_table::Attribute::Bold),
-        Cell::new("FLAG").add_attribute(comfy_table::Attribute::Bold),
-    ]);
+    ];
+    if show_ttft {
+        headers.push(Cell::new("TTFT").add_attribute(comfy_table::Attribute::Bold));
+    }
+    headers.push(Cell::new("DELTA").add_attribute(comfy_table::Attribute::Bold));
+    headers.push(Cell::new("FLAG").add_attribute(comfy_table::Attribute::Bold));
+    table.set_header(headers);
 
     let mut regression_count = 0usize;
 
@@ -82,14 +89,23 @@ pub fn print_run(
             "❌ FAIL".red().to_string()
         };
 
-        table.add_row(vec![
+        let mut row = vec![
             Cell::new(&r.test_name),
             Cell::new(format!("{:.3}", r.score)),
             Cell::new(status),
             Cell::new(format!("{}ms", r.latency_ms)),
-            Cell::new(delta_str),
-            Cell::new(flag_str),
-        ]);
+        ];
+        if show_ttft {
+            let ttft_cell = if r.ttft_ms > 0 {
+                Cell::new(format!("{}ms", r.ttft_ms))
+            } else {
+                Cell::new("—")
+            };
+            row.push(ttft_cell);
+        }
+        row.push(Cell::new(delta_str));
+        row.push(Cell::new(flag_str));
+        table.add_row(row);
     }
 
     println!("{table}");

@@ -1,13 +1,14 @@
 use anyhow::{bail, Result};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 // ── Request / Response types ──────────────────────────────────────────────────
 
 #[derive(Serialize)]
-struct ChatRequest<'a> {
-    model: &'a str,
-    messages: Vec<Message<'a>>,
+struct ChatRequest {
+    model: String,
+    messages: Vec<OwnedMessage>,
     stream: bool,
     options: ChatOptions,
 }
@@ -18,15 +19,19 @@ struct ChatOptions {
     num_predict: i32,
 }
 
-#[derive(Serialize, Deserialize)]
-struct Message<'a> {
-    role: &'a str,
-    content: &'a str,
+#[derive(Serialize, Clone)]
+struct OwnedMessage {
+    role: String,
+    content: String,
 }
 
+/// One chunk from Ollama's streaming NDJSON response.
 #[derive(Deserialize)]
-struct ChatResponse {
-    message: MessageContent,
+struct StreamChunk {
+    message: StreamMessageContent,
+    #[serde(default)]
+    done: bool,
+    /// Only present on the final chunk (done=true)
     #[serde(default)]
     prompt_eval_count: u32,
     #[serde(default)]
@@ -34,7 +39,7 @@ struct ChatResponse {
 }
 
 #[derive(Deserialize)]
-struct MessageContent {
+struct StreamMessageContent {
     content: String,
 }
 
@@ -76,6 +81,8 @@ pub struct ModelDetails {
 pub struct CompletionResult {
     pub text: String,
     pub latency_ms: u128,
+    /// Time from request sent to first token received (0 if not applicable).
+    pub ttft_ms: u64,
     pub input_tokens: u32,
     pub output_tokens: u32,
 }
@@ -93,13 +100,104 @@ impl OllamaClient {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(120))
+                .timeout(Duration::from_secs(300))
                 .build()
                 .unwrap(),
         }
     }
 
-    /// Single-turn chat completion
+    // ── Internal streaming helper ─────────────────────────────────────────────
+
+    /// Send a chat request using Ollama's streaming API and measure TTFT.
+    ///
+    /// Returns the full concatenated text plus timing / token counts.
+    async fn send_streaming(
+        &self,
+        model: &str,
+        messages: Vec<OwnedMessage>,
+        temperature: f32,
+    ) -> Result<CompletionResult> {
+        let body = ChatRequest {
+            model: model.to_string(),
+            messages,
+            stream: true,
+            options: ChatOptions {
+                temperature,
+                num_predict: 2048,
+            },
+        };
+
+        let t0 = Instant::now();
+        let resp = self
+            .client
+            .post(format!("{}/api/chat", self.base_url))
+            .json(&body)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            bail!(
+                "Ollama chat error {}: {}",
+                resp.status(),
+                resp.text().await?
+            );
+        }
+
+        let mut byte_stream = resp.bytes_stream();
+        let mut text = String::new();
+        let mut ttft_ms: u64 = 0;
+        let mut ttft_recorded = false;
+        let mut input_tokens = 0u32;
+        let mut output_tokens = 0u32;
+        // Buffer for partial lines across chunks
+        let mut line_buf = String::new();
+
+        while let Some(chunk) = byte_stream.next().await {
+            let bytes = chunk?;
+            let s = std::str::from_utf8(&bytes).unwrap_or("");
+            line_buf.push_str(s);
+
+            // Process every complete '\n'-terminated line
+            while let Some(nl) = line_buf.find('\n') {
+                let line = line_buf[..nl].trim().to_string();
+                line_buf.drain(..=nl);
+
+                if line.is_empty() {
+                    continue;
+                }
+
+                if let Ok(chunk) = serde_json::from_str::<StreamChunk>(&line) {
+                    // Record TTFT on the first non-empty content token
+                    if !ttft_recorded && !chunk.message.content.is_empty() {
+                        ttft_ms = t0.elapsed().as_millis() as u64;
+                        ttft_recorded = true;
+                    }
+                    text.push_str(&chunk.message.content);
+
+                    if chunk.done {
+                        input_tokens = chunk.prompt_eval_count;
+                        output_tokens = chunk.eval_count;
+                    }
+                }
+            }
+        }
+
+        Ok(CompletionResult {
+            text,
+            latency_ms: t0.elapsed().as_millis(),
+            ttft_ms: if ttft_recorded {
+                ttft_ms
+            } else {
+                t0.elapsed().as_millis() as u64
+            },
+            input_tokens,
+            output_tokens,
+        })
+    }
+
+    // ── Public API ────────────────────────────────────────────────────────────
+
+    /// Single-turn chat completion — measures TTFT via streaming.
     pub async fn chat(
         &self,
         model: &str,
@@ -109,54 +207,19 @@ impl OllamaClient {
     ) -> Result<CompletionResult> {
         let mut messages = Vec::new();
         if let Some(sys) = system {
-            messages.push(Message {
-                role: "system",
-                content: sys,
+            messages.push(OwnedMessage {
+                role: "system".into(),
+                content: sys.into(),
             });
         }
-        messages.push(Message {
-            role: "user",
-            content: user,
+        messages.push(OwnedMessage {
+            role: "user".into(),
+            content: user.into(),
         });
-
-        let body = ChatRequest {
-            model,
-            messages,
-            stream: false,
-            options: ChatOptions {
-                temperature,
-                num_predict: 2048,
-            },
-        };
-
-        let t0 = Instant::now();
-        let resp = self
-            .client
-            .post(format!("{}/api/chat", self.base_url))
-            .json(&body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            bail!(
-                "Ollama chat error {}: {}",
-                resp.status(),
-                resp.text().await?
-            );
-        }
-
-        let data: ChatResponse = resp.json().await?;
-        Ok(CompletionResult {
-            text: data.message.content,
-            latency_ms: t0.elapsed().as_millis(),
-            input_tokens: data.prompt_eval_count,
-            output_tokens: data.eval_count,
-        })
+        self.send_streaming(model, messages, temperature).await
     }
 
-    /// Multi-turn chat — replays a full conversation history then sends final turn.
-    /// `history` is a list of (role, content) pairs in order.
-    /// The final user message should NOT be included in history; pass it as `final_user`.
+    /// Multi-turn chat — measures TTFT via streaming.
     pub async fn chat_with_history(
         &self,
         model: &str,
@@ -164,48 +227,18 @@ impl OllamaClient {
         final_user: &str,
         temperature: f32,
     ) -> Result<CompletionResult> {
-        let mut messages: Vec<Message> = history
+        let mut messages: Vec<OwnedMessage> = history
             .iter()
-            .map(|(role, content)| Message { role, content })
+            .map(|(role, content)| OwnedMessage {
+                role: role.clone(),
+                content: content.clone(),
+            })
             .collect();
-        messages.push(Message {
-            role: "user",
-            content: final_user,
+        messages.push(OwnedMessage {
+            role: "user".into(),
+            content: final_user.into(),
         });
-
-        let body = ChatRequest {
-            model,
-            messages,
-            stream: false,
-            options: ChatOptions {
-                temperature,
-                num_predict: 2048,
-            },
-        };
-
-        let t0 = Instant::now();
-        let resp = self
-            .client
-            .post(format!("{}/api/chat", self.base_url))
-            .json(&body)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            bail!(
-                "Ollama chat error {}: {}",
-                resp.status(),
-                resp.text().await?
-            );
-        }
-
-        let data: ChatResponse = resp.json().await?;
-        Ok(CompletionResult {
-            text: data.message.content,
-            latency_ms: t0.elapsed().as_millis(),
-            input_tokens: data.prompt_eval_count,
-            output_tokens: data.eval_count,
-        })
+        self.send_streaming(model, messages, temperature).await
     }
 
     /// Compute embeddings for a single string
@@ -255,7 +288,6 @@ impl OllamaClient {
 
     /// Probe KV cache by timing two calls with the same long prefix
     pub async fn probe_kv_cache(&self, model: &str) -> Result<KvCacheProbeResult> {
-        // ~400-token shared prefix
         let prefix = "The field of artificial intelligence has a long history that began in the \
             1950s when Alan Turing proposed his famous test for machine intelligence. Since then, \
             the field has gone through several waves of optimism and funding cuts, often called \
@@ -291,7 +323,7 @@ impl OllamaClient {
             cold_latency_ms: cold.latency_ms,
             warm_latency_ms: warm.latency_ms,
             speedup_ratio: 1.0 / ratio,
-            likely_active: ratio < 0.60, // warm ≥40% faster = cache likely
+            likely_active: ratio < 0.60,
         })
     }
 

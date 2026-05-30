@@ -133,6 +133,7 @@ mod tests {
             passed,
             pass_rate: 1.0,
             latency_ms: 0,
+            ttft_ms: 0,
             input_tokens: 0,
             output_tokens: 0,
             reason: String::new(),

@@ -30,6 +30,7 @@ pub async fn evaluate_all(
     test: &TestCase,
     output: &str,
     latency_ms: u64,
+    ttft_ms: u64,
     http_status: Option<u16>,
     client: &OllamaClient,
     judge: &str,
@@ -43,6 +44,7 @@ pub async fn evaluate_all(
             assertion,
             output,
             latency_ms,
+            ttft_ms,
             http_status,
             client,
             judge,
@@ -68,6 +70,7 @@ async fn evaluate_one(
     assertion: &Assertion,
     output: &str,
     latency_ms: u64,
+    ttft_ms: u64,
     http_status: Option<u16>,
     client: &OllamaClient,
     judge: &str,
@@ -193,6 +196,21 @@ async fn evaluate_one(
                     format!("{latency_ms}ms ≤ {ms}ms ✓")
                 } else {
                     format!("{latency_ms}ms exceeded budget of {ms}ms")
+                },
+                weight: assertion.weight(),
+            })
+        }
+
+        Assertion::TtftUnder { ms, .. } => {
+            let passed = ttft_ms <= *ms;
+            Ok(AssertionResult {
+                kind: "ttft_under".into(),
+                passed,
+                score: if passed { 1.0 } else { 0.0 },
+                reason: if passed {
+                    format!("TTFT {ttft_ms}ms ≤ {ms}ms ✓")
+                } else {
+                    format!("TTFT {ttft_ms}ms exceeded budget of {ms}ms")
                 },
                 weight: assertion.weight(),
             })

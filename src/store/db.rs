@@ -25,6 +25,8 @@ pub struct TestRecord {
     pub passed: bool,
     pub pass_rate: f64, // fraction of n_runs that passed (1.0 when n_runs=1)
     pub latency_ms: u64,
+    /// Time to first token in ms (0 for non-Ollama providers)
+    pub ttft_ms: u64,
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub reason: String,
@@ -72,6 +74,10 @@ impl Db {
             "ALTER TABLE results ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        let _ = conn.execute(
+            "ALTER TABLE results ADD COLUMN ttft_ms INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
 
         Ok(Self { conn, path })
     }
@@ -106,8 +112,8 @@ impl Db {
         self.conn.execute(
             "INSERT INTO results
              (run_id, test_name, score, passed, pass_rate, latency_ms,
-              input_tokens, output_tokens, reason)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+              ttft_ms, input_tokens, output_tokens, reason)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
                 t.run_id,
                 t.test_name,
@@ -115,6 +121,7 @@ impl Db {
                 t.passed as i32,
                 t.pass_rate,
                 t.latency_ms,
+                t.ttft_ms,
                 t.input_tokens,
                 t.output_tokens,
                 t.reason,
@@ -197,6 +204,7 @@ impl Db {
             "SELECT run_id, test_name, score, passed,
                     COALESCE(pass_rate, 1.0),
                     latency_ms,
+                    COALESCE(ttft_ms, 0),
                     COALESCE(input_tokens, 0),
                     COALESCE(output_tokens, 0),
                     reason
@@ -210,9 +218,10 @@ impl Db {
                 passed: row.get::<_, i32>(3)? != 0,
                 pass_rate: row.get(4)?,
                 latency_ms: row.get(5)?,
-                input_tokens: row.get(6)?,
-                output_tokens: row.get(7)?,
-                reason: row.get(8)?,
+                ttft_ms: row.get(6)?,
+                input_tokens: row.get(7)?,
+                output_tokens: row.get(8)?,
+                reason: row.get(9)?,
             })
         })?;
         rows.map(|r| r.map_err(Into::into)).collect()

@@ -26,6 +26,8 @@ pub struct TestResult {
     pub passed: bool,
     pub pass_rate: f64, // fraction of n_runs that passed
     pub latency_ms: u64,
+    /// Time to first token in ms (0 for HTTP/script providers).
+    pub ttft_ms: u64,
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub reason: String,
@@ -328,6 +330,7 @@ async fn run_suite(
             passed: r.passed,
             pass_rate: r.pass_rate,
             latency_ms: r.latency_ms,
+            ttft_ms: r.ttft_ms,
             input_tokens: r.input_tokens,
             output_tokens: r.output_tokens,
             reason: r.reason.clone(),
@@ -605,11 +608,12 @@ async fn run_test(
     let mut passed_n = 0u32;
     let mut last_reason = String::new();
     let mut total_latency = 0u64;
+    let mut total_ttft = 0u64;
     let mut total_in_tok = 0u32;
     let mut total_out_tok = 0u32;
 
     for _ in 0..n_runs.max(1) {
-        let (output, latency_ms, http_status, in_tok, out_tok) =
+        let (output, latency_ms, http_status, ttft_ms, in_tok, out_tok) =
             if let (Some(hc), Some(method), Some(path)) = (http_cfg, &test.method, &test.path) {
                 // ── HTTP provider ──────────────────────────────────────────────
                 let url = format!("{}{}", hc.base_url.trim_end_matches('/'), path);
@@ -655,7 +659,7 @@ async fn run_test(
                     resp.text().await.unwrap_or_default()
                 };
 
-                (body, lat, Some(code), 0u32, 0u32)
+                (body, lat, Some(code), 0u64, 0u32, 0u32)
             } else if let Some(sc) = script_cfg {
                 // ── Script provider ────────────────────────────────────────────
                 let args2 = sc.args.clone();
@@ -673,7 +677,7 @@ async fn run_test(
                     script_provider::run(&cmd, &args_ref, &p, &env_ref)
                 })
                 .await??;
-                (sr.stdout, sr.latency_ms as u64, None, 0u32, 0u32)
+                (sr.stdout, sr.latency_ms as u64, None, 0u64, 0u32, 0u32)
             } else if !test.turns.is_empty() {
                 // ── Multi-turn Ollama ──────────────────────────────────────────
                 let history: Vec<(String, String)> = test
@@ -688,6 +692,7 @@ async fn run_test(
                     comp.text,
                     comp.latency_ms as u64,
                     None,
+                    comp.ttft_ms,
                     comp.input_tokens,
                     comp.output_tokens,
                 )
@@ -698,6 +703,7 @@ async fn run_test(
                     comp.text,
                     comp.latency_ms as u64,
                     None,
+                    comp.ttft_ms,
                     comp.input_tokens,
                     comp.output_tokens,
                 )
@@ -707,6 +713,7 @@ async fn run_test(
             test,
             &output,
             latency_ms,
+            ttft_ms,
             http_status,
             client,
             judge,
@@ -734,6 +741,7 @@ async fn run_test(
         }
         last_reason = reason;
         total_latency += latency_ms;
+        total_ttft += ttft_ms;
         total_in_tok += in_tok;
         total_out_tok += out_tok;
     }
@@ -748,6 +756,7 @@ async fn run_test(
         passed: passed_n > n / 2, // majority vote
         pass_rate,
         latency_ms: total_latency / n as u64,
+        ttft_ms: total_ttft / n as u64,
         input_tokens: total_in_tok / n,
         output_tokens: total_out_tok / n,
         reason: last_reason,
