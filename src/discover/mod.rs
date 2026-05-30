@@ -8,7 +8,7 @@ use crate::cli::AutodiscoverArgs;
 use crate::cli::RunArgs;
 use crate::embedded;
 use crate::runner;
-use scanner::{Finding, FindingKind};
+use scanner::FindingKind;
 
 /// Maps a finding to the bundled suite paths that are relevant for it.
 /// These paths are relative to the suites dir (e.g. "rag/faithfulness.toml").
