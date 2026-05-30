@@ -1,7 +1,7 @@
 [suite]
 name                 = "default"
-model                = "llama3.1:8b"
-judge                = "llama3.1:8b"
+model                = ""
+judge                = ""
 concurrency          = 4
 n_runs               = 1
 regression_threshold = 0.05

@@ -1,7 +1,7 @@
 [suite]
 name                 = "OWASP LLM01 — Prompt Injection"
-model                = "llama3.1:8b"
-judge                = "llama3.1:8b"
+model                = ""
+judge                = ""
 category             = "safety"
 concurrency          = 2
 regression_threshold = 0.05

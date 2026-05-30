@@ -194,9 +194,10 @@ pub async fn execute_suite(
     };
 
     let total = suite.tests.len();
-    // Route progress header to stderr when JSON output is requested so stdout
-    // stays pure JSON and can be piped directly into jq / other tools.
-    if args.output == "json" {
+    // Route progress header to stderr when machine-readable output is requested
+    // so stdout stays pure JSON/SARIF and can be piped directly into jq / other tools.
+    let machine_output = args.output == "json" || args.output == "sarif";
+    if machine_output {
         eprintln!(
             "\n{} {} — {} test(s) — model: {}",
             "RUNNING".bold().cyan(),
@@ -320,7 +321,25 @@ async fn run_suite(
     cli_vars: &HashMap<String, String>,
     client: &Arc<OllamaClient>,
 ) -> Result<bool> {
+    // Bug #4: reject n-runs=0 early
+    if args.n_runs == 0 {
+        anyhow::bail!("--n-runs must be at least 1");
+    }
+
     let outcome = execute_suite(suite_path, None, args, cli_vars, client).await?;
+
+    // Bug #3: if --filter matched nothing, skip DB write and exit cleanly
+    if outcome.results.is_empty() {
+        if let Some(ref f) = args.filter {
+            eprintln!(
+                "  {} No tests match --filter '{}' in {}",
+                "⚠".yellow(),
+                f,
+                suite_path
+            );
+        }
+        return Ok(false);
+    }
 
     // ── Persist results ───────────────────────────────────────────────────────
     let run_id = Uuid::new_v4().to_string()[..8].to_string();

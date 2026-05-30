@@ -77,13 +77,30 @@ pub async fn run(args: DetectArgs) -> Result<()> {
         table.add_row(vec!["MoE", "No (dense model)"]);
     }
 
-    table.add_row(vec![
-        "Context length",
-        &format!("{} tokens", meta.context_length),
-    ]);
-    table.add_row(vec!["Embedding dim", &format!("{}", meta.embedding_dim)]);
-    table.add_row(vec!["Q heads", &format!("{}", meta.head_count)]);
-    table.add_row(vec!["KV heads", &format!("{}", meta.head_count_kv)]);
+    let ctx = if meta.context_length == 0 {
+        "—".to_string()
+    } else {
+        format!("{} tokens", meta.context_length)
+    };
+    let emb = if meta.embedding_dim == 0 {
+        "—".to_string()
+    } else {
+        format!("{}", meta.embedding_dim)
+    };
+    let qh = if meta.head_count == 0 {
+        "—".to_string()
+    } else {
+        format!("{}", meta.head_count)
+    };
+    let kvh = if meta.head_count_kv == 0 {
+        "—".to_string()
+    } else {
+        format!("{}", meta.head_count_kv)
+    };
+    table.add_row(vec!["Context length", &ctx]);
+    table.add_row(vec!["Embedding dim", &emb]);
+    table.add_row(vec!["Q heads", &qh]);
+    table.add_row(vec!["KV heads", &kvh]);
     table.add_row(vec!["Parameters", &meta.parameter_size]);
     table.add_row(vec!["Quantization", &meta.quantization]);
 

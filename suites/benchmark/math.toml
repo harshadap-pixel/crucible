@@ -2,8 +2,8 @@
 
 [suite]
 name                 = "Benchmark — Math Reasoning"
-model                = "llama3.1:8b"
-judge                = "llama3.1:8b"
+model                = ""
+judge                = ""
 category             = "benchmark"
 concurrency          = 2
 n_runs               = 3

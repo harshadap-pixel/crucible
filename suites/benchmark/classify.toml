@@ -2,8 +2,8 @@
 
 [suite]
 name                 = "Benchmark — Sentiment Classification"
-model                = "llama3.1:8b"
-judge                = "llama3.1:8b"
+model                = ""
+judge                = ""
 category             = "benchmark"
 concurrency          = 2
 n_runs               = 3
@@ -14,7 +14,7 @@ name        = "cls-001-positive"
 description = "Positive sentiment review"
 prompt      = "Classify the sentiment of the following text. Reply with ONLY one word: positive or negative.\n\nText: The app is fast and the new dashboard is very useful."
 assert = [
-  { type = "contains",     value = "positive", weight = 2.0 },
+  { type = "regex",        value = "(?i)positive", weight = 2.0 },
   { type = "not_contains", value = "negative" },
   { type = "regex",        value = "(?i)^positive" },
 ]
@@ -24,7 +24,7 @@ name        = "cls-002-negative"
 description = "Negative sentiment review"
 prompt      = "Classify the sentiment of the following text. Reply with ONLY one word: positive or negative.\n\nText: Frequent timeouts and poor support made this unusable."
 assert = [
-  { type = "contains",     value = "negative", weight = 2.0 },
+  { type = "regex",        value = "(?i)negative", weight = 2.0 },
   { type = "not_contains", value = "positive" },
   { type = "regex",        value = "(?i)^negative" },
 ]

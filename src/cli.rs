@@ -52,9 +52,13 @@ pub struct AutodiscoverArgs {
     #[arg(long)]
     pub save: Option<String>,
 
-    /// Model override for generated suites that need one (default: mock)
+    /// Model to evaluate (used when --run is set)
     #[arg(short, long)]
     pub model: Option<String>,
+
+    /// Judge model for LLM-as-judge assertions (used when --run is set)
+    #[arg(short, long)]
+    pub judge: Option<String>,
 
     /// Ollama base URL (used when --run is set)
     #[arg(long, default_value = "http://localhost:11434")]

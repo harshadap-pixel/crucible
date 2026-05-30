@@ -1,7 +1,7 @@
 [suite]
 name                 = "RAG Fallback & Semantic Normalization"
-model                = "llama3.1:8b"
-judge                = "llama3.1:8b"
+model                = ""
+judge                = ""
 category             = "rag"
 concurrency          = 2
 regression_threshold = 0.05
