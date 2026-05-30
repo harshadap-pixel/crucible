@@ -32,6 +32,8 @@ pub struct TestResult {
     pub output_tokens: u32,
     pub reason: String,
     pub description: Option<String>,
+    /// Raw model output from the last run (empty string for n_runs > 1).
+    pub output: String,
 }
 
 /// Outcome of running a suite against one model — returned by [`execute_suite`].
@@ -192,14 +194,27 @@ pub async fn execute_suite(
     };
 
     let total = suite.tests.len();
-    println!(
-        "\n{} {} — {} test(s) — model: {}",
-        "RUNNING".bold().cyan(),
-        suite.suite.name.bold(),
-        total,
-        suite.suite.model.yellow(),
-    );
-    println!("{}", "─".repeat(62).dimmed());
+    // Route progress header to stderr when JSON output is requested so stdout
+    // stays pure JSON and can be piped directly into jq / other tools.
+    if args.output == "json" {
+        eprintln!(
+            "\n{} {} — {} test(s) — model: {}",
+            "RUNNING".bold().cyan(),
+            suite.suite.name.bold(),
+            total,
+            suite.suite.model.yellow(),
+        );
+        eprintln!("{}", "─".repeat(62).dimmed());
+    } else {
+        println!(
+            "\n{} {} — {} test(s) — model: {}",
+            "RUNNING".bold().cyan(),
+            suite.suite.name.bold(),
+            total,
+            suite.suite.model.yellow(),
+        );
+        println!("{}", "─".repeat(62).dimmed());
+    }
 
     let bar = ProgressBar::new(total as u64);
     bar.set_style(
@@ -429,14 +444,17 @@ fn print_json(
         .map(|r| {
             format!(
                 "    {{\"name\":{},\"passed\":{},\"score\":{:.4},\"pass_rate\":{:.4},\
-             \"latency_ms\":{},\"input_tokens\":{},\"output_tokens\":{},\"reason\":{}}}",
+             \"latency_ms\":{},\"ttft_ms\":{},\"input_tokens\":{},\"output_tokens\":{},\
+             \"output\":{},\"reason\":{}}}",
                 json_str(&r.test_name),
                 r.passed,
                 r.score,
                 r.pass_rate,
                 r.latency_ms,
+                r.ttft_ms,
                 r.input_tokens,
                 r.output_tokens,
+                json_str(&r.output),
                 json_str(&r.reason),
             )
         })
@@ -609,6 +627,7 @@ async fn run_test(
     let mut scores = Vec::new();
     let mut passed_n = 0u32;
     let mut last_reason = String::new();
+    let mut last_output = String::new();
     let mut total_latency = 0u64;
     let mut total_ttft = 0u64;
     let mut total_in_tok = 0u32;
@@ -742,6 +761,7 @@ async fn run_test(
             passed_n += 1;
         }
         last_reason = reason;
+        last_output = output;
         total_latency += latency_ms;
         total_ttft += ttft_ms;
         total_in_tok += in_tok;
@@ -763,6 +783,7 @@ async fn run_test(
         output_tokens: total_out_tok / n,
         reason: last_reason,
         description: test.description.clone(),
+        output: last_output,
     })
 }
 

@@ -5,6 +5,12 @@ use crucible::{cli, detect, discover, regression, report, runner, store};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Ignore SIGPIPE so piping into head/jq/etc. doesn't panic
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
