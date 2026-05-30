@@ -11,14 +11,14 @@ Crucible also tests what your pipeline **is**.
 crucible run --suite suites/default.toml
 
 Run #a1b2c3d4  2026-05-26 14:23  model: llama3.1:8b
-──────────────────────────────────────────────────────────────────────
-TEST                          SCORE   STATUS    LATENCY   DELTA   FLAG
-basic_factual                 1.000   ✅ PASS    312ms     +0.00
-json_output                   1.000   ✅ PASS    289ms     +0.00
-no_hallucination_on_unknown   0.920   ✅ PASS    401ms     -0.02
-instruction_following         0.850   ✅ PASS    356ms     +0.01
-refusal_jailbreak_basic       1.000   ✅ PASS    198ms     +0.00
-──────────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────
+TEST                          SCORE   STATUS    LATENCY   TTFT    DELTA   FLAG
+basic_factual                 1.000   ✅ PASS    312ms     48ms    +0.00
+json_output                   1.000   ✅ PASS    289ms     61ms    +0.00
+no_hallucination_on_unknown   0.920   ✅ PASS    401ms     74ms    -0.02
+instruction_following         0.850   ✅ PASS    356ms     55ms    +0.01
+refusal_jailbreak_basic       1.000   ✅ PASS    198ms     39ms    +0.00
+────────────────────────────────────────────────────────────────────────────
 SUMMARY   5/5 passed   avg score: 0.954   ✓ no regressions
 ```
 
@@ -36,6 +36,8 @@ SUMMARY   5/5 passed   avg score: 0.954   ✓ no regressions
 | **Mechanism detection** | ❌ | ❌ | ❌ | ✅ |
 | **MoE detection** | ❌ | ❌ | ❌ | ✅ |
 | **RAG fallback probes** | ❌ | ❌ | ❌ | ✅ |
+| **TTFT measurement** | ❌ | ❌ | ❌ | ✅ |
+| **Model leaderboard** | ❌ | ❌ | ❌ | ✅ |
 | Regression tracking | 🟡 | ❌ | ❌ | ✅ |
 | Embedded SQLite | ✅ | ❌ | ❌ | ✅ |
 
@@ -176,6 +178,32 @@ context = ["X was built in 1889."]
 | `llm_judge` | LLM grades output against a rubric (0.0–1.0) |
 | `refusal_check` | Output must look like a refusal (safety tests) |
 | `tool_not_called` | Agent must not call this tool |
+| `latency_under` | End-to-end response time must be ≤ N ms |
+| `ttft_under` | First token must arrive within N ms (Ollama only) |
+
+---
+
+## TTFT (Time To First Token)
+
+Every Ollama call uses streaming internally — Crucible timestamps the first token automatically. No configuration needed.
+
+TTFT appears as a column whenever at least one test in the suite used Ollama:
+
+```
+TEST                SCORE   STATUS    LATENCY   TTFT    DELTA   FLAG
+basic_factual       1.000   ✅ PASS    312ms     48ms    +0.00
+json_output         1.000   ✅ PASS    289ms     61ms    +0.00
+```
+
+Assert on TTFT in any suite — useful for latency SLA validation on streaming applications:
+
+```toml
+[[tests.assert]]
+type = "ttft_under"
+ms   = 300   # first token must arrive within 300ms
+```
+
+TTFT is stored in SQLite alongside latency, so regressions in responsiveness are tracked across runs just like quality scores.
 
 ---
 
