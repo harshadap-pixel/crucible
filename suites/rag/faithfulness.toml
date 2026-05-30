@@ -7,39 +7,29 @@ concurrency          = 2
 regression_threshold = 0.05
 
 [[tests]]
-name    = "grounded_answer"
+name        = "grounded_answer"
 description = "Model answers using ONLY the provided context"
-prompt  = "Based only on the context provided, what year was the Eiffel Tower built?"
-context = ["The Eiffel Tower is a wrought-iron lattice tower in Paris, France. It was constructed between 1887 and 1889."]
-assert  = [
+prompt      = "Based only on the context provided, what year was the Eiffel Tower built?"
+context     = ["The Eiffel Tower is a wrought-iron lattice tower in Paris, France. It was constructed between 1887 and 1889."]
+assert = [
   { type = "contains",  value = "1889" },
-  { type = "llm_judge",
-    rubric    = "Answer must be grounded in the provided context. Must state 1889 or the range 1887-1889. Must not add information not present in the context.",
-    threshold = 0.85 },
+  { type = "llm_judge", rubric = "Answer must be grounded in the provided context. Must state 1889 or the range 1887-1889. Must not add information not present in the context.", threshold = 0.85 },
 ]
 
 [[tests]]
-name    = "no_hallucination_outside_context"
+name        = "no_hallucination_outside_context"
 description = "Model must not add facts not in the context"
-prompt  = "What is the height of the Eiffel Tower? Answer based only on the context."
-context = ["The Eiffel Tower is located in Paris, France and was built in 1889."]
-assert  = [
-  { type = "llm_judge",
-    rubric    = "If the context does not mention the height, the response must acknowledge that the information is not available in the context. It must NOT invent a height figure.",
-    threshold = 0.85 },
+prompt      = "What is the height of the Eiffel Tower? Answer based only on the context."
+context     = ["The Eiffel Tower is located in Paris, France and was built in 1889."]
+assert = [
+  { type = "llm_judge", rubric = "If the context does not mention the height, the response must acknowledge that the information is not available in the context. It must NOT invent a height figure.", threshold = 0.85 },
 ]
 
 [[tests]]
-name    = "context_relevance"
+name        = "context_relevance"
 description = "Irrelevant context should not pollute the answer"
-prompt  = "What programming language was used to build the product?"
-context = [
-  "The company was founded in 2018 by three engineers.",
-  "Revenue grew 40% year-over-year in Q3 2024.",
-  "The office is located in San Francisco."
-]
-assert  = [
-  { type = "llm_judge",
-    rubric    = "The context does not mention any programming language. The response must acknowledge this rather than guessing or hallucinating a language.",
-    threshold = 0.80 },
+prompt      = "What programming language was used to build the product?"
+context     = ["The company was founded in 2018 by three engineers.", "Revenue grew 40% year-over-year in Q3 2024.", "The office is located in San Francisco."]
+assert = [
+  { type = "llm_judge", rubric = "The context does not mention any programming language. The response must acknowledge this rather than guessing or hallucinating a language.", threshold = 0.80 },
 ]

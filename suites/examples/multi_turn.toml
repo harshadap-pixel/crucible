@@ -1,25 +1,12 @@
 # ── Multi-turn conversation tests ─────────────────────────────────────────────
-# Demonstrates multi-turn (context-retention) testing.
-#
-# How it works:
-#   `turns` are replayed in order as the conversation history.
-#   `prompt` is the FINAL user message sent after the history.
-#   The model must remember what was established earlier in the conversation.
-#
-# Turn roles: "user" | "assistant"
-# The runner calls chat_with_history() on Ollama.
-#
-# Run:
-#   crucible run suites/examples/multi_turn.toml
 
 [suite]
 name        = "Multi-Turn Context Retention"
 model       = "llama3.1:8b"
 judge       = "llama3.1:8b"
 concurrency = 2
-n_runs      = 2   # run twice; context failures are usually consistent
+n_runs      = 2
 
-# ── Test 1: name recall ────────────────────────────────────────────────────────
 [[tests]]
 name        = "remember-user-name"
 description = "Model must recall the user's name from earlier in the conversation"
@@ -35,7 +22,6 @@ assert = [
     { type = "llm_judge", rubric = "The response correctly identifies the user's name as Marcus", threshold = 0.8 },
 ]
 
-# ── Test 2: preference tracking ───────────────────────────────────────────────
 [[tests]]
 name        = "recall-stated-preference"
 description = "Model must remember a preference set earlier"
@@ -47,11 +33,10 @@ turns = [
 ]
 prompt = "Did I tell you any preference about how I want answers?"
 assert = [
-    { type = "contains",  value = "concise"   },
-    { type = "contains",  value = "sentence"  },
+    { type = "contains", value = "concise"  },
+    { type = "contains", value = "sentence" },
 ]
 
-# ── Test 3: topic continuity ───────────────────────────────────────────────────
 [[tests]]
 name        = "sql-topic-continuity"
 description = "Model answers a follow-up about a SQL query discussed earlier"
@@ -61,14 +46,11 @@ turns = [
 ]
 prompt = "How would you add a LIMIT clause to the query we discussed?"
 assert = [
-    { type = "contains",    value = "LIMIT"  },
-    { type = "not_contains", value = "sorry"  },  # model shouldn't forget the context
-    { type = "llm_judge",
-      rubric    = "The response adds a LIMIT clause to a SELECT query and shows correct SQL syntax",
-      threshold = 0.75 },
+    { type = "contains",     value = "LIMIT" },
+    { type = "not_contains", value = "sorry" },
+    { type = "llm_judge",    rubric = "The response adds a LIMIT clause to a SELECT query and shows correct SQL syntax", threshold = 0.75 },
 ]
 
-# ── Test 4: long context (5 turns) ────────────────────────────────────────────
 [[tests]]
 name        = "five-turn-recall"
 description = "Recall a number introduced 5 turns ago"
@@ -84,5 +66,5 @@ turns = [
 ]
 prompt = "What number did I ask you to remember at the start of our conversation?"
 assert = [
-    { type = "contains",  value = "7391"  },
+    { type = "contains", value = "7391" },
 ]

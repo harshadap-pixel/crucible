@@ -3,6 +3,7 @@ pub mod cli;
 pub mod config;
 pub mod detect;
 pub mod discover;
+pub mod embedded;
 pub mod leaderboard;
 pub mod providers;
 pub mod regression;

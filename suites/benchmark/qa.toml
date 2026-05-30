@@ -1,6 +1,4 @@
 # ── Benchmark: Question Answering ────────────────────────────────────────────
-# Mirrors benchmark/benchmark_tasks.jsonl task_type=qa
-# Baseline: mock scores 1.0 on both
 
 [suite]
 name                 = "Benchmark — Question Answering"
@@ -13,22 +11,20 @@ regression_threshold = 0.10
 
 [[tests]]
 name        = "qa-001-mars"
-description = "Red Planet = Mars — mock scores 1.0"
+description = "Red Planet = Mars"
 prompt      = "Answer with one word only: Which planet is known as the Red Planet?"
-
 assert = [
-  { type = "contains",   value = "Mars",  weight = 3.0 },
+  { type = "contains",     value = "Mars",    weight = 3.0 },
   { type = "not_contains", value = "Jupiter" },
   { type = "not_contains", value = "Venus" },
-  { type = "regex",      value = r"(?i)\bMars\b" },
+  { type = "regex",        value = "(?i)\\bMars\\b" },
 ]
 
 [[tests]]
 name        = "qa-002-water"
-description = "Chemical symbol for water = H2O — mock scores 1.0"
+description = "Chemical symbol for water = H2O"
 prompt      = "Answer with one token only: The chemical symbol for water is?"
-
 assert = [
-  { type = "contains", value = "H2O",  weight = 3.0 },
-  { type = "regex",    value = r"\bH2O\b" },
+  { type = "contains", value = "H2O",      weight = 3.0 },
+  { type = "regex",    value = "\\bH2O\\b" },
 ]

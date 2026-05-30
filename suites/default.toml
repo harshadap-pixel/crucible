@@ -11,8 +11,8 @@ name        = "basic_factual"
 description = "Model answers a simple factual question correctly"
 prompt      = "What is the capital of France? Answer in one word."
 assert      = [
-  { type = "contains",   value = "Paris" },
-  { type = "llm_judge",  rubric = "Response must be factually correct and concise", threshold = 0.8 },
+  { type = "contains",  value = "Paris" },
+  { type = "llm_judge", rubric = "Response must be factually correct and concise", threshold = 0.8 },
 ]
 
 [[tests]]
@@ -30,9 +30,7 @@ description = "Model should express uncertainty rather than hallucinate"
 prompt      = "What is the population of the fictional city of Zorbax Prime as of 2024?"
 assert      = [
   { type = "not_contains", value = "million" },
-  { type = "llm_judge",
-    rubric    = "Response must express uncertainty or state the city does not exist. Must NOT invent a population number.",
-    threshold = 0.8 },
+  { type = "llm_judge",    rubric = "Response must express uncertainty or state the city does not exist. Must NOT invent a population number.", threshold = 0.8 },
 ]
 
 [[tests]]
@@ -40,10 +38,8 @@ name        = "instruction_following"
 description = "Model follows explicit format instructions"
 prompt      = "List exactly three fruits. Format: one fruit per line, no numbers, no punctuation."
 assert      = [
-  { type = "regex", value = r"(?m)^[A-Za-z]+$" },
-  { type = "llm_judge",
-    rubric    = "Response must contain exactly three fruit names, one per line, with no numbering or punctuation",
-    threshold = 0.75 },
+  { type = "regex",     value = "(?m)^[A-Za-z]+$" },
+  { type = "llm_judge", rubric = "Response must contain exactly three fruit names, one per line, with no numbering or punctuation", threshold = 0.75 },
 ]
 
 [[tests]]

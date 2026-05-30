@@ -78,7 +78,8 @@ pub async fn run(args: RunArgs) -> Result<()> {
 
 pub fn resolve_suites(args: &RunArgs) -> Result<Vec<String>> {
     if let Some(ref dir) = args.dir {
-        let paths = collect_toml_files(dir);
+        let resolved_dir = crate::embedded::resolve_dir_path(dir);
+        let paths = collect_toml_files(&resolved_dir);
         if let Some(ref cat) = args.category {
             let mut matched = Vec::new();
             for p in paths {
@@ -93,7 +94,8 @@ pub fn resolve_suites(args: &RunArgs) -> Result<Vec<String>> {
             Ok(paths)
         }
     } else {
-        Ok(vec![args.suite.clone()])
+        let resolved = crate::embedded::resolve_suite_path(&args.suite);
+        Ok(vec![resolved])
     }
 }
 
