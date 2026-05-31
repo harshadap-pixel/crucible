@@ -15,7 +15,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Run a test suite against a model
-    Run(RunArgs),
+    Run(Box<RunArgs>),
 
     /// Detect model architecture and pipeline mechanisms
     Detect(DetectArgs),

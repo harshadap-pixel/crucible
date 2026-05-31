@@ -541,15 +541,17 @@ fn generate_rag_suite(
         strategy_lines.push_str(&format!("# Embedding:  {}\n", profile.embedding.join(", ")));
     }
 
-    let n_strategy_tests = profile.chunking.iter().map(|_| 0).count()  // chunk boundary
-        + (!profile.chunking.is_empty() as usize)
+    let n_strategy_tests = (!profile.chunking.is_empty() as usize)
         + (!profile.reranking.is_empty() as usize)
         + (profile.retrieval.iter().any(|s| s == "hybrid") as usize) * 2
         + (profile.retrieval.iter().any(|s| s == "hyde") as usize)
         + (profile.retrieval.iter().any(|s| s == "multi_query") as usize)
         + (profile.chunking.iter().any(|s| s == "late_chunking") as usize)
         + (profile.retrieval.iter().any(|s| s == "parent_doc") as usize)
-        + (profile.retrieval.iter().any(|s| s == "contextual_compression") as usize);
+        + (profile
+            .retrieval
+            .iter()
+            .any(|s| s == "contextual_compression") as usize);
 
     let total_tests = 2 + n_strategy_tests;
 
