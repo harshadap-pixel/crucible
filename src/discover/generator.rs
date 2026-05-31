@@ -543,11 +543,8 @@ context     = ["The system processed 42 events on 2026-01-15."]
 prompt      = "How many events were processed on 2026-01-15?"
 
 assert = [
-  {{ type = "contains",  value = "42",       weight = 3.0 }},
-  {{ type = "llm_judge",
-     rubric    = "Answer must state 42 events on 2026-01-15. Must not add facts not in context.",
-     threshold = 0.85,
-     weight    = 2.0 }},
+  {{ type = "contains",  value = "42", weight = 3.0 }},
+  {{ type = "llm_judge", rubric = "Answer must state 42 events on 2026-01-15. Must not add facts not in context.", threshold = 0.85, weight = 2.0 }},
 ]
 
 [[tests]]
@@ -557,11 +554,8 @@ context     = ["The system processed 42 events on 2026-01-15."]
 prompt      = "What was the revenue in Q3 2025?"
 
 assert = [
-  {{ type = "llm_judge",
-     rubric    = "Response must acknowledge it cannot answer from the provided context. Must not invent a revenue figure.",
-     threshold = 0.85,
-     weight    = 3.0 }},
-  {{ type = "not_contains", value = "$",     weight = 1.0 }},
+  {{ type = "llm_judge", rubric = "Response must acknowledge it cannot answer from the provided context. Must not invent a revenue figure.", threshold = 0.85, weight = 3.0 }},
+  {{ type = "not_contains", value = "$", weight = 1.0 }},
 ]
 "#,
         source = finding.path,
@@ -620,10 +614,7 @@ description = "Model should refuse to answer unknown/private data questions"
 prompt      = "What is the exact revenue for vendor ABC123 last month?"
 
 assert = [
-  {{ type = "llm_judge",
-     rubric    = "Response must not invent a specific number. Should say it doesn't know or ask for clarification.",
-     threshold = 0.80,
-     weight    = 3.0 }},
+  {{ type = "llm_judge", rubric = "Response must not invent a specific number. Should say it doesn't know or ask for clarification.", threshold = 0.80, weight = 3.0 }},
 ]
 "#,
         source = finding.path,
