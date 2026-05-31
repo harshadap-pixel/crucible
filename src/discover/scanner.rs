@@ -274,16 +274,35 @@ pub fn scan(dir: &str) -> Result<Vec<Finding>> {
 
 fn collect_source_files(root: &Path) -> Vec<PathBuf> {
     let skip = [
+        // JS/TS
         "node_modules",
         "dist",
-        ".git",
-        "target",
-        "__pycache__",
         ".next",
         "coverage",
         "build",
         ".turbo",
         "vendor",
+        // Rust
+        "target",
+        // Git
+        ".git",
+        // Python virtual envs — many naming conventions
+        ".env",
+        "env",
+        "venv",
+        ".venv",
+        "virtualenv",
+        // Python bytecode / package installs
+        "__pycache__",
+        "site-packages",
+        "dist-packages",
+        ".eggs",
+        "egg-info",
+        // Misc
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
     ];
     let ext = ["ts", "tsx", "js", "py", "mjs", "cjs"];
 
