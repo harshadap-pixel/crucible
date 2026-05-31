@@ -10,7 +10,9 @@ use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::discover::scanner::{Finding, FindingKind, Language, McpFramework, McpTransport, RagProfile};
+use crate::discover::scanner::{
+    Finding, FindingKind, Language, McpFramework, McpTransport, RagProfile,
+};
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -521,7 +523,10 @@ fn generate_rag_suite(
     // ── Header comment lines per detected strategy ────────────────────────────
     let mut strategy_lines = String::new();
     if !profile.frameworks.is_empty() {
-        strategy_lines.push_str(&format!("# Framework:  {}\n", profile.frameworks.join(", ")));
+        strategy_lines.push_str(&format!(
+            "# Framework:  {}\n",
+            profile.frameworks.join(", ")
+        ));
     }
     if !profile.retrieval.is_empty() {
         strategy_lines.push_str(&format!("# Retrieval:  {}\n", profile.retrieval.join(", ")));
@@ -591,7 +596,11 @@ fn generate_rag_suite(
     if profile.retrieval.iter().any(|s| s == "parent_doc") {
         body.push_str(rag_parent_doc_test());
     }
-    if profile.retrieval.iter().any(|s| s == "contextual_compression") {
+    if profile
+        .retrieval
+        .iter()
+        .any(|s| s == "contextual_compression")
+    {
         body.push_str(rag_contextual_compression_test());
     }
 
@@ -629,7 +638,7 @@ assert = [\n\
 // ── Strategy-specific test blocks ─────────────────────────────────────────────
 
 fn rag_chunk_boundary_test() -> &'static str {
-"\n\
+    "\n\
 [[tests]]\n\
 name        = \"rag-chunk-boundary\"\n\
 description = \"Answer requires info from two adjacent chunks — retriever must fetch both\"\n\
@@ -647,7 +656,7 @@ assert = [\n\
 }
 
 fn rag_reranker_sensitivity_test() -> &'static str {
-"\n\
+    "\n\
 [[tests]]\n\
 name        = \"rag-reranker-demotes-lexical-match\"\n\
 description = \"Lexically similar but semantically wrong doc must be demoted by reranker\"\n\
@@ -666,7 +675,7 @@ assert = [\n\
 }
 
 fn rag_hybrid_keyword_test() -> &'static str {
-"\n\
+    "\n\
 [[tests]]\n\
 name        = \"rag-hybrid-keyword-exact\"\n\
 description = \"Exact identifier query — BM25 component of hybrid search must retrieve the right doc\"\n\
@@ -684,7 +693,7 @@ assert = [\n\
 }
 
 fn rag_hybrid_semantic_test() -> &'static str {
-"\n\
+    "\n\
 [[tests]]\n\
 name        = \"rag-hybrid-semantic-paraphrase\"\n\
 description = \"No shared keywords with source — dense vector side of hybrid must handle this\"\n\
@@ -700,7 +709,7 @@ assert = [\n\
 }
 
 fn rag_hyde_test() -> &'static str {
-"\n\
+    "\n\
 [[tests]]\n\
 name        = \"rag-hyde-keywordless-query\"\n\
 description = \"Abstract question with no source keywords — HyDE must generate a hypothesis to bridge it\"\n\
@@ -715,7 +724,7 @@ assert = [\n\
 }
 
 fn rag_multi_query_test() -> &'static str {
-"\n\
+    "\n\
 [[tests]]\n\
 name        = \"rag-multi-query-ambiguous-intent\"\n\
 description = \"Ambiguous query needs multiple retrieval angles — multi-query must generate variants\"\n\
@@ -732,7 +741,7 @@ assert = [\n\
 }
 
 fn rag_late_chunking_test() -> &'static str {
-"\n\
+    "\n\
 [[tests]]\n\
 name        = \"rag-late-chunking-section-retention\"\n\
 description = \"Answer buried in a specific section — late chunking must retain full-doc context\"\n\
@@ -753,7 +762,7 @@ assert = [\n\
 }
 
 fn rag_parent_doc_test() -> &'static str {
-"\n\
+    "\n\
 [[tests]]\n\
 name        = \"rag-parent-doc-small-to-big\"\n\
 description = \"Small chunk matches query but full answer requires the parent document\"\n\
@@ -770,7 +779,7 @@ assert = [\n\
 }
 
 fn rag_contextual_compression_test() -> &'static str {
-"\n\
+    "\n\
 [[tests]]\n\
 name        = \"rag-contextual-compression-noise\"\n\
 description = \"Retrieved document is 90% noise — compressor must extract only the relevant span\"\n\

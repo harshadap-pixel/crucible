@@ -128,11 +128,21 @@ impl RagProfile {
     /// Flatten all detected signals into a single Vec for `Finding.signals`.
     pub fn all_signals(&self) -> Vec<String> {
         let mut out = Vec::new();
-        for s in &self.chunking   { out.push(format!("chunk:{s}")); }
-        for s in &self.reranking  { out.push(format!("rerank:{s}")); }
-        for s in &self.retrieval  { out.push(s.clone()); }
-        for s in &self.frameworks { out.push(s.clone()); }
-        for s in &self.embedding  { out.push(format!("embed:{s}")); }
+        for s in &self.chunking {
+            out.push(format!("chunk:{s}"));
+        }
+        for s in &self.reranking {
+            out.push(format!("rerank:{s}"));
+        }
+        for s in &self.retrieval {
+            out.push(s.clone());
+        }
+        for s in &self.frameworks {
+            out.push(s.clone());
+        }
+        for s in &self.embedding {
+            out.push(format!("embed:{s}"));
+        }
         out
     }
 
@@ -295,7 +305,9 @@ pub fn scan(dir: &str) -> Result<Vec<Finding>> {
             findings.push(Finding {
                 path: path.display().to_string(),
                 signals,
-                kind: FindingKind::RagPipeline { profile: rag_profile },
+                kind: FindingKind::RagPipeline {
+                    profile: rag_profile,
+                },
             });
             continue;
         }
@@ -604,11 +616,11 @@ fn extract_allowed_schemas(content: &str) -> Vec<String> {
 /// Returns an empty profile if no RAG signals are present at all.
 pub fn detect_rag_profile(content: &str) -> RagProfile {
     RagProfile {
-        chunking:   detect_chunking(content),
-        reranking:  detect_reranking(content),
-        retrieval:  detect_retrieval(content),
+        chunking: detect_chunking(content),
+        reranking: detect_reranking(content),
+        retrieval: detect_retrieval(content),
         frameworks: detect_rag_frameworks(content),
-        embedding:  detect_embedding(content),
+        embedding: detect_embedding(content),
     }
 }
 
@@ -622,27 +634,66 @@ fn detect_chunking(content: &str) -> Vec<String> {
         };
     }
     // Late chunking (ColBERT-style) — check before generic recursive to avoid double-count
-    chk!("late_chunking",   "late_chunking", "latechunking", "late-chunking");
+    chk!(
+        "late_chunking",
+        "late_chunking",
+        "latechunking",
+        "late-chunking"
+    );
     // LangChain / LlamaIndex recursive splitter — most common
-    chk!("recursive_char",  "recursivecharactertextsplitter", "recursive_character_text_splitter",
-                            "recursivetextsplitter", "recursive_text_splitter");
+    chk!(
+        "recursive_char",
+        "recursivecharactertextsplitter",
+        "recursive_character_text_splitter",
+        "recursivetextsplitter",
+        "recursive_text_splitter"
+    );
     // Semantic chunking
-    chk!("semantic",        "semanticchunker", "semantic_chunker", "semanticsplitter",
-                            "semantic_splitter", "semantic_split");
+    chk!(
+        "semantic",
+        "semanticchunker",
+        "semantic_chunker",
+        "semanticsplitter",
+        "semantic_splitter",
+        "semantic_split"
+    );
     // Token-based (tiktoken, etc.)
-    chk!("token",           "tokentextsplitter", "token_text_splitter", "tiktoken",
-                            "cl100k_base", "tiktokensplitter");
+    chk!(
+        "token",
+        "tokentextsplitter",
+        "token_text_splitter",
+        "tiktoken",
+        "cl100k_base",
+        "tiktokensplitter"
+    );
     // Sentence-boundary chunking
-    chk!("sentence",        "sentencesplitter", "sentence_splitter", "nltk.sent_tokenize",
-                            "sent_tokenize", "spacysplitter", "spacy_splitter");
+    chk!(
+        "sentence",
+        "sentencesplitter",
+        "sentence_splitter",
+        "nltk.sent_tokenize",
+        "sent_tokenize",
+        "spacysplitter",
+        "spacy_splitter"
+    );
     // Code-aware chunking
-    chk!("code",            "codetextsplitter", "code_text_splitter", "codesplitter",
-                            "language.python", "language.javascript", "language.typescript",
-                            "language.go", "language.rust");
+    chk!(
+        "code",
+        "codetextsplitter",
+        "code_text_splitter",
+        "codesplitter",
+        "language.python",
+        "language.javascript",
+        "language.typescript",
+        "language.go",
+        "language.rust"
+    );
     // Fixed / generic chunk_size — only if no richer strategy detected
     if found.is_empty()
         && (content.contains("chunk_size") || content.contains("chunksize"))
-        && (content.contains("chunk_overlap") || content.contains("splitter") || content.contains("split("))
+        && (content.contains("chunk_overlap")
+            || content.contains("splitter")
+            || content.contains("split("))
     {
         found.push("fixed_size".into());
     }
@@ -658,17 +709,48 @@ fn detect_reranking(content: &str) -> Vec<String> {
             }
         };
     }
-    chk!("cross_encoder",  "crossencoder", "cross_encoder", "cross-encoder/",
-                            "ms-marco-minilm", "ms-marco-electra");
-    chk!("cohere_rerank",  "cohere.rerank", "cohererank", "cohere_rerank",
-                            "rerank-english-v", "rerank-multilingual-v", "co.rerank(");
-    chk!("bge_reranker",   "bge-reranker", "bge_reranker", "flagreranker",
-                            "baai/bge-reranker", "baai/bge-m3");
-    chk!("colbert",        "colbert", "colbertv2", "ragatouille");
-    chk!("llm_rerank",     "llmrerank", "llm_rerank", "llmreranker", "rankgpt",
-                            "rankllm");
-    chk!("voyage_rerank",  "voyage-rerank", "voyage_rerank", "voyageai.rerank",
-                            "rerank-2", "rerank-lite-1");
+    chk!(
+        "cross_encoder",
+        "crossencoder",
+        "cross_encoder",
+        "cross-encoder/",
+        "ms-marco-minilm",
+        "ms-marco-electra"
+    );
+    chk!(
+        "cohere_rerank",
+        "cohere.rerank",
+        "cohererank",
+        "cohere_rerank",
+        "rerank-english-v",
+        "rerank-multilingual-v",
+        "co.rerank("
+    );
+    chk!(
+        "bge_reranker",
+        "bge-reranker",
+        "bge_reranker",
+        "flagreranker",
+        "baai/bge-reranker",
+        "baai/bge-m3"
+    );
+    chk!("colbert", "colbert", "colbertv2", "ragatouille");
+    chk!(
+        "llm_rerank",
+        "llmrerank",
+        "llm_rerank",
+        "llmreranker",
+        "rankgpt",
+        "rankllm"
+    );
+    chk!(
+        "voyage_rerank",
+        "voyage-rerank",
+        "voyage_rerank",
+        "voyageai.rerank",
+        "rerank-2",
+        "rerank-lite-1"
+    );
     found
 }
 
@@ -690,7 +772,9 @@ fn detect_retrieval(content: &str) -> Vec<String> {
         || content.contains("hybridretriever")
         || content.contains("weightedretriever")
         || (content.contains("bm25")
-            && (content.contains("vector") || content.contains("embed") || content.contains("dense")));
+            && (content.contains("vector")
+                || content.contains("embed")
+                || content.contains("dense")));
     if is_hybrid {
         found.push("hybrid".into());
     } else if content.contains("bm25retriever")
@@ -702,39 +786,75 @@ fn detect_retrieval(content: &str) -> Vec<String> {
         found.push("bm25".into());
     }
     // HyDE — Hypothetical Document Embeddings
-    chk!("hyde",                    "hypotheticaldocumentembedder", "hypothetical_document_embed",
-                                    "hyde(", "hyde_embed", "hyde_retriever");
+    chk!(
+        "hyde",
+        "hypotheticaldocumentembedder",
+        "hypothetical_document_embed",
+        "hyde(",
+        "hyde_embed",
+        "hyde_retriever"
+    );
     // Multi-query / query expansion
-    chk!("multi_query",             "multiqueryretriever", "multi_query_retriever",
-                                    "multi-query", "generate_queries", "queryexpansion",
-                                    "query_expansion", "multiquery(");
+    chk!(
+        "multi_query",
+        "multiqueryretriever",
+        "multi_query_retriever",
+        "multi-query",
+        "generate_queries",
+        "queryexpansion",
+        "query_expansion",
+        "multiquery("
+    );
     // Step-back prompting
-    chk!("step_back",               "stepbackprompt", "step_back_prompt", "stepback(");
+    chk!(
+        "step_back",
+        "stepbackprompt",
+        "step_back_prompt",
+        "stepback("
+    );
     // Contextual compression
-    chk!("contextual_compression",  "contextualcompressionretriever",
-                                    "contextual_compression_retriever", "compressionretriever",
-                                    "llmchainextractor", "embeddings_filter");
+    chk!(
+        "contextual_compression",
+        "contextualcompressionretriever",
+        "contextual_compression_retriever",
+        "compressionretriever",
+        "llmchainextractor",
+        "embeddings_filter"
+    );
     // Parent document / small-to-big
-    chk!("parent_doc",              "parentdocumentretriever", "parent_document_retriever",
-                                    "smalltobigretrieved", "multi_vector_retriever",
-                                    "multivectorretriever");
+    chk!(
+        "parent_doc",
+        "parentdocumentretriever",
+        "parent_document_retriever",
+        "smalltobigretrieved",
+        "multi_vector_retriever",
+        "multivectorretriever"
+    );
     // ── Vector stores → retrieval ─────────────────────────────────────────────
-    chk!("faiss",       "faiss", "faissindex");
-    chk!("chroma",      "chroma", "chromadb", "chromaclient");
-    chk!("pinecone",    "pinecone");
-    chk!("weaviate",    "weaviate");
-    chk!("qdrant",      "qdrant");
-    chk!("usearch",     "usearch", "metrickind.cos", "ef_construction");
-    chk!("hnswlib",     "hnswlib", "hnsw");
-    chk!("milvus",      "milvus");
-    chk!("lancedb",     "lancedb");
-    chk!("pgvector",    "pgvector", "pg_embedding");
-    chk!("opensearch",  "opensearchvector", "opensearch_vector");
-    chk!("redis_vss",   "redisvss", "redis_vector", "redissearch");
+    chk!("faiss", "faiss", "faissindex");
+    chk!("chroma", "chroma", "chromadb", "chromaclient");
+    chk!("pinecone", "pinecone");
+    chk!("weaviate", "weaviate");
+    chk!("qdrant", "qdrant");
+    chk!("usearch", "usearch", "metrickind.cos", "ef_construction");
+    chk!("hnswlib", "hnswlib", "hnsw");
+    chk!("milvus", "milvus");
+    chk!("lancedb", "lancedb");
+    chk!("pgvector", "pgvector", "pg_embedding");
+    chk!("opensearch", "opensearchvector", "opensearch_vector");
+    chk!("redis_vss", "redisvss", "redis_vector", "redissearch");
     // ── Legacy / generic retrieval ────────────────────────────────────────────
     if found.is_empty() {
-        chk!("vector_search",  "retriev", "vector_search", "nearest_neighbor",
-                               "top_k", "onnxruntime", "ort.inferencesession", ".onnx");
+        chk!(
+            "vector_search",
+            "retriev",
+            "vector_search",
+            "nearest_neighbor",
+            "top_k",
+            "onnxruntime",
+            "ort.inferencesession",
+            ".onnx"
+        );
     }
     found
 }
@@ -748,14 +868,37 @@ fn detect_rag_frameworks(content: &str) -> Vec<String> {
             }
         };
     }
-    chk!("langchain",   "langchain", "from langchain", "langchain_core",
-                        "langchain_community", "@langchain/");
-    chk!("llamaindex",  "llama_index", "from llama_index", "llamaindex",
-                        "llama-index", "llamaindex.core");
-    chk!("haystack",    "from haystack", "import haystack", "haystack.core",
-                        "haystackembeddings");
-    chk!("dspy",        "dspy.", "import dspy", "from dspy", "dspy.retrieve",
-                        "dspy.chainofthought");
+    chk!(
+        "langchain",
+        "langchain",
+        "from langchain",
+        "langchain_core",
+        "langchain_community",
+        "@langchain/"
+    );
+    chk!(
+        "llamaindex",
+        "llama_index",
+        "from llama_index",
+        "llamaindex",
+        "llama-index",
+        "llamaindex.core"
+    );
+    chk!(
+        "haystack",
+        "from haystack",
+        "import haystack",
+        "haystack.core",
+        "haystackembeddings"
+    );
+    chk!(
+        "dspy",
+        "dspy.",
+        "import dspy",
+        "from dspy",
+        "dspy.retrieve",
+        "dspy.chainofthought"
+    );
     found
 }
 
@@ -768,24 +911,60 @@ fn detect_embedding(content: &str) -> Vec<String> {
             }
         };
     }
-    chk!("openai",               "openaiembeddings", "openai_embeddings",
-                                 "text-embedding-ada", "text-embedding-3-small",
-                                 "text-embedding-3-large", "openai.embeddings");
-    chk!("cohere",               "cohereembeddings", "cohere_embeddings",
-                                 "embed-english-v", "embed-multilingual-v",
-                                 "cohere.embed(");
-    chk!("sentence_transformers","sentence_transformers", "sentencetransformer",
-                                 "sentence-transformers", "stsb-", "all-minilm",
-                                 "all-mpnet");
-    chk!("huggingface",          "huggingfaceembeddings", "huggingface_embeddings",
-                                 "transformers.autotokenizer", "auto.from_pretrained",
-                                 "bge-small", "bge-large", "bge-m3");
-    chk!("ollama",               "ollamaembeddings", "ollama_embeddings",
-                                 "nomic-embed", "mxbai-embed", "ollama.embed");
-    chk!("voyage",               "voyageembeddings", "voyage_embeddings",
-                                 "voyage-2", "voyage-3", "voyage-code",
-                                 "voyageai.get_embeddings");
-    chk!("onnx",                 "onnxruntime", "ort.inferencesession", ".onnx");
+    chk!(
+        "openai",
+        "openaiembeddings",
+        "openai_embeddings",
+        "text-embedding-ada",
+        "text-embedding-3-small",
+        "text-embedding-3-large",
+        "openai.embeddings"
+    );
+    chk!(
+        "cohere",
+        "cohereembeddings",
+        "cohere_embeddings",
+        "embed-english-v",
+        "embed-multilingual-v",
+        "cohere.embed("
+    );
+    chk!(
+        "sentence_transformers",
+        "sentence_transformers",
+        "sentencetransformer",
+        "sentence-transformers",
+        "stsb-",
+        "all-minilm",
+        "all-mpnet"
+    );
+    chk!(
+        "huggingface",
+        "huggingfaceembeddings",
+        "huggingface_embeddings",
+        "transformers.autotokenizer",
+        "auto.from_pretrained",
+        "bge-small",
+        "bge-large",
+        "bge-m3"
+    );
+    chk!(
+        "ollama",
+        "ollamaembeddings",
+        "ollama_embeddings",
+        "nomic-embed",
+        "mxbai-embed",
+        "ollama.embed"
+    );
+    chk!(
+        "voyage",
+        "voyageembeddings",
+        "voyage_embeddings",
+        "voyage-2",
+        "voyage-3",
+        "voyage-code",
+        "voyageai.get_embeddings"
+    );
+    chk!("onnx", "onnxruntime", "ort.inferencesession", ".onnx");
     found
 }
 
