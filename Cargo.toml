@@ -1,6 +1,6 @@
 [package]
 name        = "crucible"
-version = "0.1.9"
+version = "0.1.10"
 edition     = "2021"
 authors     = ["Harshada Padhye <harshadapadhye5@gmail.com>"]
 description = "Local-first LLM evaluation: quality, RAG, agents, safety, and mechanism detection in one binary"
