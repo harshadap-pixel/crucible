@@ -61,8 +61,8 @@ impl Finding {
             FindingKind::NL2Sql { function_name, .. } => {
                 format!("NL2SQL validator — fn `{function_name}`")
             }
-            FindingKind::RagPipeline { components } => {
-                format!("RAG pipeline — {}", components.join(" + "))
+            FindingKind::RagPipeline { profile } => {
+                format!("RAG pipeline — {}", profile.summary())
             }
             FindingKind::AiService { provider } => format!("AI service — {provider}"),
             FindingKind::McpServer {
@@ -94,6 +94,74 @@ impl Finding {
     }
 }
 
+/// Structured RAG strategy profile detected from static code analysis.
+/// All five dimensions are independent — any subset may be populated.
+/// NOTE: content is lowercased before detection; all patterns here are lowercase.
+#[derive(Debug, Clone, Default)]
+pub struct RagProfile {
+    /// Chunking strategies found: "recursive_char", "semantic", "token",
+    /// "sentence", "code", "late_chunking", "fixed_size"
+    pub chunking: Vec<String>,
+    /// Reranking approaches found: "cross_encoder", "cohere_rerank",
+    /// "bge_reranker", "colbert", "llm_rerank", "voyage_rerank"
+    pub reranking: Vec<String>,
+    /// Retrieval modes + vector stores found: "hybrid", "bm25", "hyde",
+    /// "multi_query", "step_back", "contextual_compression", "parent_doc",
+    /// "faiss", "chroma", "pinecone", "weaviate", "qdrant", "usearch", …
+    pub retrieval: Vec<String>,
+    /// RAG frameworks found: "langchain", "llamaindex", "haystack", "dspy"
+    pub frameworks: Vec<String>,
+    /// Embedding strategies found: "openai", "cohere", "sentence_transformers",
+    /// "huggingface", "ollama", "voyage"
+    pub embedding: Vec<String>,
+}
+
+impl RagProfile {
+    pub fn is_empty(&self) -> bool {
+        self.chunking.is_empty()
+            && self.reranking.is_empty()
+            && self.retrieval.is_empty()
+            && self.frameworks.is_empty()
+            && self.embedding.is_empty()
+    }
+
+    /// Flatten all detected signals into a single Vec for `Finding.signals`.
+    pub fn all_signals(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for s in &self.chunking   { out.push(format!("chunk:{s}")); }
+        for s in &self.reranking  { out.push(format!("rerank:{s}")); }
+        for s in &self.retrieval  { out.push(s.clone()); }
+        for s in &self.frameworks { out.push(s.clone()); }
+        for s in &self.embedding  { out.push(format!("embed:{s}")); }
+        out
+    }
+
+    /// Human-readable one-liner for the discovery report.
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.frameworks.is_empty() {
+            parts.push(self.frameworks.join("+"));
+        }
+        if !self.retrieval.is_empty() {
+            parts.push(self.retrieval.join("+"));
+        }
+        if !self.chunking.is_empty() {
+            parts.push(format!("chunk:{}", self.chunking.join("+")));
+        }
+        if !self.reranking.is_empty() {
+            parts.push(format!("rerank:{}", self.reranking.join("+")));
+        }
+        if !self.embedding.is_empty() {
+            parts.push(format!("embed:{}", self.embedding.join("+")));
+        }
+        if parts.is_empty() {
+            "vector pipeline".into()
+        } else {
+            parts.join(" · ")
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum FindingKind {
     /// A file that runs eval cases and prints pass/fail to stdout
@@ -121,7 +189,8 @@ pub enum FindingKind {
     },
     /// Embedding + vector-store pipeline
     RagPipeline {
-        components: Vec<String>, // e.g. ["ONNX embeddings", "USearch HNSW"]
+        /// Detected RAG strategy profile — drives targeted test generation.
+        profile: RagProfile,
     },
     /// Generic LLM service (Bedrock, OpenAI, etc.)
     AiService { provider: String },
@@ -219,14 +288,14 @@ pub fn scan(dir: &str) -> Result<Vec<Finding>> {
         }
 
         // ── RAG pipeline detection ────────────────────────────────────────
-        let rag_components = detect_rag_components(&content);
-        if !rag_components.is_empty() {
+        let rag_profile = detect_rag_profile(&content);
+        if !rag_profile.is_empty() {
+            // Compute signals before moving profile into the enum variant
+            let signals = rag_profile.all_signals();
             findings.push(Finding {
                 path: path.display().to_string(),
-                signals: rag_components.clone(),
-                kind: FindingKind::RagPipeline {
-                    components: rag_components,
-                },
+                signals,
+                kind: FindingKind::RagPipeline { profile: rag_profile },
             });
             continue;
         }
@@ -527,47 +596,197 @@ fn extract_allowed_schemas(content: &str) -> Vec<String> {
     schemas
 }
 
-// ── RAG component detection ───────────────────────────────────────────────────
+// ── RAG strategy detection ────────────────────────────────────────────────────
+// NOTE: content is already lowercased before these are called.
+// All patterns here MUST be lowercase.
 
-fn detect_rag_components(content: &str) -> Vec<String> {
-    let mut c = Vec::new();
-    macro_rules! check {
+/// Main entry point: build a full `RagProfile` from source content.
+/// Returns an empty profile if no RAG signals are present at all.
+pub fn detect_rag_profile(content: &str) -> RagProfile {
+    RagProfile {
+        chunking:   detect_chunking(content),
+        reranking:  detect_reranking(content),
+        retrieval:  detect_retrieval(content),
+        frameworks: detect_rag_frameworks(content),
+        embedding:  detect_embedding(content),
+    }
+}
+
+fn detect_chunking(content: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    macro_rules! chk {
         ($label:expr, $($pat:expr),+) => {
             if [$($pat),+].iter().any(|p| content.contains(p)) {
-                c.push($label.to_string());
+                found.push($label.to_string());
             }
         };
     }
-    check!(
-        "ONNX embeddings",
-        "onnxruntime",
-        "ort.inferencesession",
-        ".onnx"
-    );
-    check!(
-        "USearch HNSW",
-        "usearch",
-        "metrickind.cos",
-        "ef_construction"
-    );
-    check!("HNSWlib", "hnswlib", "hnsw");
-    check!("FAISS", "faiss", "faissindex");
-    check!("Vector DB", "pinecone", "weaviate", "qdrant", "chroma");
-    check!(
-        "Sentence embeddings",
-        "all-minilm",
-        "bge-",
-        "nomic-embed",
-        "text-embedding"
-    );
-    check!(
-        "Retrieval",
-        "retriev",
-        "vector_search",
-        "nearest_neighbor",
-        "top_k"
-    );
-    c
+    // Late chunking (ColBERT-style) — check before generic recursive to avoid double-count
+    chk!("late_chunking",   "late_chunking", "latechunking", "late-chunking");
+    // LangChain / LlamaIndex recursive splitter — most common
+    chk!("recursive_char",  "recursivecharactertextsplitter", "recursive_character_text_splitter",
+                            "recursivetextsplitter", "recursive_text_splitter");
+    // Semantic chunking
+    chk!("semantic",        "semanticchunker", "semantic_chunker", "semanticsplitter",
+                            "semantic_splitter", "semantic_split");
+    // Token-based (tiktoken, etc.)
+    chk!("token",           "tokentextsplitter", "token_text_splitter", "tiktoken",
+                            "cl100k_base", "tiktokensplitter");
+    // Sentence-boundary chunking
+    chk!("sentence",        "sentencesplitter", "sentence_splitter", "nltk.sent_tokenize",
+                            "sent_tokenize", "spacysplitter", "spacy_splitter");
+    // Code-aware chunking
+    chk!("code",            "codetextsplitter", "code_text_splitter", "codesplitter",
+                            "language.python", "language.javascript", "language.typescript",
+                            "language.go", "language.rust");
+    // Fixed / generic chunk_size — only if no richer strategy detected
+    if found.is_empty()
+        && (content.contains("chunk_size") || content.contains("chunksize"))
+        && (content.contains("chunk_overlap") || content.contains("splitter") || content.contains("split("))
+    {
+        found.push("fixed_size".into());
+    }
+    found
+}
+
+fn detect_reranking(content: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    macro_rules! chk {
+        ($label:expr, $($pat:expr),+) => {
+            if [$($pat),+].iter().any(|p| content.contains(p)) {
+                found.push($label.to_string());
+            }
+        };
+    }
+    chk!("cross_encoder",  "crossencoder", "cross_encoder", "cross-encoder/",
+                            "ms-marco-minilm", "ms-marco-electra");
+    chk!("cohere_rerank",  "cohere.rerank", "cohererank", "cohere_rerank",
+                            "rerank-english-v", "rerank-multilingual-v", "co.rerank(");
+    chk!("bge_reranker",   "bge-reranker", "bge_reranker", "flagreranker",
+                            "baai/bge-reranker", "baai/bge-m3");
+    chk!("colbert",        "colbert", "colbertv2", "ragatouille");
+    chk!("llm_rerank",     "llmrerank", "llm_rerank", "llmreranker", "rankgpt",
+                            "rankllm");
+    chk!("voyage_rerank",  "voyage-rerank", "voyage_rerank", "voyageai.rerank",
+                            "rerank-2", "rerank-lite-1");
+    found
+}
+
+fn detect_retrieval(content: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    macro_rules! chk {
+        ($label:expr, $($pat:expr),+) => {
+            if [$($pat),+].iter().any(|p| content.contains(p)) {
+                found.push($label.to_string());
+            }
+        };
+    }
+    // ── Retrieval strategies ──────────────────────────────────────────────────
+    // Hybrid search (check before bm25-only to avoid double)
+    let is_hybrid = content.contains("hybridsearch")
+        || content.contains("hybrid_search")
+        || content.contains("ensembleretriever")
+        || content.contains("ensemble_retriever")
+        || content.contains("hybridretriever")
+        || content.contains("weightedretriever")
+        || (content.contains("bm25")
+            && (content.contains("vector") || content.contains("embed") || content.contains("dense")));
+    if is_hybrid {
+        found.push("hybrid".into());
+    } else if content.contains("bm25retriever")
+        || content.contains("bm25_retriever")
+        || content.contains("bm25okapi")
+        || content.contains("rank_bm25")
+        || content.contains("bm25(")
+    {
+        found.push("bm25".into());
+    }
+    // HyDE — Hypothetical Document Embeddings
+    chk!("hyde",                    "hypotheticaldocumentembedder", "hypothetical_document_embed",
+                                    "hyde(", "hyde_embed", "hyde_retriever");
+    // Multi-query / query expansion
+    chk!("multi_query",             "multiqueryretriever", "multi_query_retriever",
+                                    "multi-query", "generate_queries", "queryexpansion",
+                                    "query_expansion", "multiquery(");
+    // Step-back prompting
+    chk!("step_back",               "stepbackprompt", "step_back_prompt", "stepback(");
+    // Contextual compression
+    chk!("contextual_compression",  "contextualcompressionretriever",
+                                    "contextual_compression_retriever", "compressionretriever",
+                                    "llmchainextractor", "embeddings_filter");
+    // Parent document / small-to-big
+    chk!("parent_doc",              "parentdocumentretriever", "parent_document_retriever",
+                                    "smalltobigretrieved", "multi_vector_retriever",
+                                    "multivectorretriever");
+    // ── Vector stores → retrieval ─────────────────────────────────────────────
+    chk!("faiss",       "faiss", "faissindex");
+    chk!("chroma",      "chroma", "chromadb", "chromaclient");
+    chk!("pinecone",    "pinecone");
+    chk!("weaviate",    "weaviate");
+    chk!("qdrant",      "qdrant");
+    chk!("usearch",     "usearch", "metrickind.cos", "ef_construction");
+    chk!("hnswlib",     "hnswlib", "hnsw");
+    chk!("milvus",      "milvus");
+    chk!("lancedb",     "lancedb");
+    chk!("pgvector",    "pgvector", "pg_embedding");
+    chk!("opensearch",  "opensearchvector", "opensearch_vector");
+    chk!("redis_vss",   "redisvss", "redis_vector", "redissearch");
+    // ── Legacy / generic retrieval ────────────────────────────────────────────
+    if found.is_empty() {
+        chk!("vector_search",  "retriev", "vector_search", "nearest_neighbor",
+                               "top_k", "onnxruntime", "ort.inferencesession", ".onnx");
+    }
+    found
+}
+
+fn detect_rag_frameworks(content: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    macro_rules! chk {
+        ($label:expr, $($pat:expr),+) => {
+            if [$($pat),+].iter().any(|p| content.contains(p)) {
+                found.push($label.to_string());
+            }
+        };
+    }
+    chk!("langchain",   "langchain", "from langchain", "langchain_core",
+                        "langchain_community", "@langchain/");
+    chk!("llamaindex",  "llama_index", "from llama_index", "llamaindex",
+                        "llama-index", "llamaindex.core");
+    chk!("haystack",    "from haystack", "import haystack", "haystack.core",
+                        "haystackembeddings");
+    chk!("dspy",        "dspy.", "import dspy", "from dspy", "dspy.retrieve",
+                        "dspy.chainofthought");
+    found
+}
+
+fn detect_embedding(content: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    macro_rules! chk {
+        ($label:expr, $($pat:expr),+) => {
+            if [$($pat),+].iter().any(|p| content.contains(p)) {
+                found.push($label.to_string());
+            }
+        };
+    }
+    chk!("openai",               "openaiembeddings", "openai_embeddings",
+                                 "text-embedding-ada", "text-embedding-3-small",
+                                 "text-embedding-3-large", "openai.embeddings");
+    chk!("cohere",               "cohereembeddings", "cohere_embeddings",
+                                 "embed-english-v", "embed-multilingual-v",
+                                 "cohere.embed(");
+    chk!("sentence_transformers","sentence_transformers", "sentencetransformer",
+                                 "sentence-transformers", "stsb-", "all-minilm",
+                                 "all-mpnet");
+    chk!("huggingface",          "huggingfaceembeddings", "huggingface_embeddings",
+                                 "transformers.autotokenizer", "auto.from_pretrained",
+                                 "bge-small", "bge-large", "bge-m3");
+    chk!("ollama",               "ollamaembeddings", "ollama_embeddings",
+                                 "nomic-embed", "mxbai-embed", "ollama.embed");
+    chk!("voyage",               "voyageembeddings", "voyage_embeddings",
+                                 "voyage-2", "voyage-3", "voyage-code",
+                                 "voyageai.get_embeddings");
+    chk!("onnx",                 "onnxruntime", "ort.inferencesession", ".onnx");
+    found
 }
 
 // ── AI provider detection ─────────────────────────────────────────────────────
