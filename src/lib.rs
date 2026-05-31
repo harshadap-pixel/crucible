@@ -1,6 +1,7 @@
 pub mod assertions;
 pub mod cli;
 pub mod config;
+pub mod dataset;
 pub mod detect;
 pub mod discover;
 pub mod embedded;

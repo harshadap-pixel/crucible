@@ -81,6 +81,20 @@ pub struct RunArgs {
     #[arg(long, conflicts_with = "suite")]
     pub dir: Option<String>,
 
+    // ── Dataset mode ──────────────────────────────────────────────────────────
+    /// Dataset file to evaluate (JSONL or CSV). Use with --template.
+    #[arg(long)]
+    pub dataset: Option<String>,
+
+    /// Suite TOML used as a template when --dataset is set.
+    /// Use {{field}} in prompt/assert to reference dataset columns.
+    #[arg(long)]
+    pub template: Option<String>,
+
+    /// Group dataset results by this column (e.g. --slice-by category)
+    #[arg(long)]
+    pub slice_by: Option<String>,
+
     // ── Filtering ─────────────────────────────────────────────────────────────
     /// Only run suites whose [suite].category matches (use with --dir)
     #[arg(long)]

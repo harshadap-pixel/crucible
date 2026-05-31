@@ -54,6 +54,12 @@ pub struct SuiteOutcome {
 
 pub async fn run(args: RunArgs) -> Result<()> {
     let cli_vars = parse_vars(&args.vars)?;
+
+    // Dataset mode: --dataset file.jsonl --template suite.toml
+    if let Some(ref dataset_path) = args.dataset.clone() {
+        return run_dataset(dataset_path, &args, &cli_vars).await;
+    }
+
     let suite_paths = resolve_suites(&args)?;
     if suite_paths.is_empty() {
         anyhow::bail!("No suite files found. Check --suite / --dir path.");
@@ -74,6 +80,161 @@ pub async fn run(args: RunArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+// ── Dataset mode ──────────────────────────────────────────────────────────────
+
+async fn run_dataset(
+    dataset_path: &str,
+    args: &RunArgs,
+    cli_vars: &HashMap<String, String>,
+) -> Result<()> {
+    use crate::dataset;
+
+    // Resolve template suite
+    let template_path = args.template.as_deref().unwrap_or("default.toml");
+    let resolved_template = crate::embedded::resolve_suite_path(template_path);
+
+    println!(
+        "\n{} {} — {} rows",
+        "DATASET".bold().cyan(),
+        dataset_path.yellow(),
+        "loading...".dimmed()
+    );
+    println!("{}", "─".repeat(62).dimmed());
+
+    // Load dataset
+    let mut rows = dataset::load(dataset_path)?;
+    println!("  Loaded {} row(s)", rows.len());
+
+    // MMLU auto-detection
+    if dataset::is_mmlu(&rows) {
+        println!(
+            "  {} MMLU format detected — auto-normalising rows",
+            "ℹ".cyan()
+        );
+        rows = dataset::normalise_mmlu(rows);
+    }
+
+    // Load template suite and grab the first test as the template
+    let mut suite = config::load(&resolved_template)?;
+    if suite.tests.is_empty() {
+        anyhow::bail!("Template suite '{resolved_template}' has no [[tests]] blocks");
+    }
+
+    // Apply CLI model/judge overrides
+    if let Some(ref m) = args.model {
+        suite.suite.model = m.clone();
+    }
+    if let Some(ref j) = args.judge {
+        suite.suite.judge = j.clone();
+    }
+
+    let template_test = suite.tests.remove(0);
+    let slice_field = args.slice_by.as_deref();
+
+    // Expand rows into test cases
+    let test_cases = dataset::expand_template(&template_test, &rows, slice_field);
+    println!("  Template    {}", resolved_template.dimmed());
+    println!("  Tests       {} (1 per row)", test_cases.len());
+    println!("  Model       {}", suite.suite.model.yellow());
+    println!();
+
+    // Replace suite tests with expanded cases and run
+    suite.tests = test_cases;
+    let suite_path_for_run = format!("__dataset__{dataset_path}");
+
+    let client = Arc::new(OllamaClient::new(&args.ollama_url));
+
+    // Write suite to a temp file so execute_suite can load it
+    // Instead: directly call execute_suite_from_config
+    let outcome = execute_suite_from_config(suite, args, cli_vars, &client).await?;
+
+    // Print per-row results table (compact)
+    print_dataset_rows(&outcome.results);
+
+    // Compute and print aggregate stats
+    let stats = dataset::compute_stats(&outcome.results, &rows, slice_field);
+    dataset::print_stats(&stats, &outcome.model, dataset_path, slice_field);
+
+    // Persist to DB
+    let run_id = Uuid::new_v4().to_string()[..8].to_string();
+    let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let db = Db::open()?;
+    db.insert_run(&RunRecord {
+        id: run_id.clone(),
+        suite_name: format!("dataset:{dataset_path}"),
+        model: outcome.model.clone(),
+        timestamp,
+        is_baseline: false,
+        total_tests: outcome.total,
+        passed_tests: outcome.passed,
+        avg_score: outcome.avg_score,
+        total_tokens: outcome.total_tokens,
+    })?;
+    for r in &outcome.results {
+        db.insert_test_result(&TestRecord {
+            run_id: run_id.clone(),
+            test_name: r.test_name.clone(),
+            score: r.score,
+            passed: r.passed,
+            pass_rate: r.pass_rate,
+            latency_ms: r.latency_ms,
+            ttft_ms: r.ttft_ms,
+            input_tokens: r.input_tokens,
+            output_tokens: r.output_tokens,
+            reason: r.reason.clone(),
+        })?;
+    }
+    println!("  Run ID: {}", run_id.dimmed());
+    let _ = suite_path_for_run; // suppress unused warning
+
+    Ok(())
+}
+
+/// Print a compact per-row results table (no full test output, just pass/fail + score)
+fn print_dataset_rows(results: &[TestResult]) {
+    if results.is_empty() {
+        return;
+    }
+    println!(
+        "  {:<12} {:<7} {:<8} {:<10} {:<8}",
+        "ROW".dimmed(),
+        "SCORE".dimmed(),
+        "STATUS".dimmed(),
+        "LATENCY".dimmed(),
+        "TTFT".dimmed()
+    );
+    println!("  {}", "─".repeat(50).dimmed());
+    for r in results {
+        let status = if r.passed {
+            "✅".to_string()
+        } else {
+            "❌".to_string()
+        };
+        let score_s = format!("{:.3}", r.score);
+        let score_c = if r.score >= 0.9 {
+            score_s.green()
+        } else if r.score >= 0.5 {
+            score_s.yellow()
+        } else {
+            score_s.red()
+        };
+        let ttft = if r.ttft_ms > 0 {
+            format!("{}ms", r.ttft_ms)
+        } else {
+            "—".into()
+        };
+        println!(
+            "  {:<12} {} {:<8} {:<10} {:<8}",
+            r.test_name.dimmed(),
+            score_c,
+            status,
+            format!("{}ms", r.latency_ms),
+            ttft,
+        );
+    }
+    println!();
 }
 
 // ── Suite resolution ──────────────────────────────────────────────────────────
@@ -274,6 +435,121 @@ pub async fn execute_suite(
     let mut results: Vec<TestResult> = Vec::new();
     let mut stopped = false;
 
+    for h in handles {
+        match h.await? {
+            Ok(r) => {
+                let failed = !r.passed;
+                results.push(r);
+                if fail_fast && failed {
+                    stopped = true;
+                    break;
+                }
+            }
+            Err(e) => eprintln!("  {} Test error: {e}", "✗".red()),
+        }
+    }
+    bar.finish_and_clear();
+
+    let passed = results.iter().filter(|r| r.passed).count() as u32;
+    let avg_score = if results.is_empty() {
+        0.0
+    } else {
+        results.iter().map(|r| r.score).sum::<f64>() / results.len() as f64
+    };
+    let total_tokens: u64 = results
+        .iter()
+        .map(|r| r.input_tokens as u64 + r.output_tokens as u64)
+        .sum();
+
+    Ok(SuiteOutcome {
+        model: (*model).clone(),
+        suite_name: suite.suite.name,
+        regression_threshold: suite.suite.regression_threshold,
+        results,
+        avg_score,
+        passed,
+        total: total as u32,
+        total_tokens,
+        stopped,
+    })
+}
+
+/// Like `execute_suite` but takes an already-loaded `config::Suite` — used by
+/// dataset mode which builds the suite dynamically from expanded test cases.
+pub async fn execute_suite_from_config(
+    suite: config::Suite,
+    args: &RunArgs,
+    cli_vars: &HashMap<String, String>,
+    client: &Arc<OllamaClient>,
+) -> Result<SuiteOutcome> {
+    // Write to a temp TOML file so execute_suite can load it, OR inline execution.
+    // We inline-execute to avoid a file round-trip: replicate the inner loop.
+    let ollama_url = args.ollama_url.clone();
+    let is_ollama =
+        suite.suite.script.is_none() && suite.suite.http.is_none() && suite.suite.model != "mock";
+
+    if is_ollama && !client.health().await {
+        anyhow::bail!("Ollama not reachable at {ollama_url}. Is it running?");
+    }
+
+    let suite_n_runs = args.n_runs.max(suite.suite.n_runs).max(1);
+    let total = suite.tests.len();
+    let update_snapshots = args.update_snapshots;
+    let retry = args.retry;
+    let fail_fast = args.fail_fast;
+
+    let bar = ProgressBar::new(total as u64);
+    bar.set_style(
+        ProgressStyle::with_template("  [{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("█▉▊▋▌▍▎▏  "),
+    );
+
+    let http_cfg = suite.suite.http.clone();
+    let sem = Arc::new(Semaphore::new(args.concurrency));
+    let model = Arc::new(suite.suite.model.clone());
+    let judge = Arc::new(suite.suite.judge.clone());
+    let script_arc = Arc::new(suite.suite.script.clone());
+    let http_arc = Arc::new(http_cfg);
+    let cli_vars_arc = Arc::new(cli_vars.clone());
+    let suite_dir = Arc::new(".".to_string());
+
+    let mut handles = Vec::new();
+    for test in suite.tests {
+        let client = client.clone();
+        let model = model.clone();
+        let judge = judge.clone();
+        let script_arc = script_arc.clone();
+        let http_arc = http_arc.clone();
+        let sem = sem.clone();
+        let bar = bar.clone();
+        let extra_vars = cli_vars_arc.clone();
+        let suite_dir = suite_dir.clone();
+
+        handles.push(tokio::spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let result = run_test_with_retry(
+                &client,
+                &model,
+                &judge,
+                &test,
+                suite_n_runs,
+                &script_arc,
+                &http_arc,
+                &extra_vars,
+                &suite_dir,
+                update_snapshots,
+                retry,
+            )
+            .await;
+            bar.inc(1);
+            bar.set_message(test.name.clone());
+            result
+        }));
+    }
+
+    let mut results: Vec<TestResult> = Vec::new();
+    let mut stopped = false;
     for h in handles {
         match h.await? {
             Ok(r) => {
