@@ -110,6 +110,7 @@ fn signing_key(secret: &str, date: &str, region: &str, service: &str) -> Vec<u8>
 }
 
 /// Build the AWS4-HMAC-SHA256 Authorization header for a Bedrock request.
+#[allow(clippy::too_many_arguments)]
 fn sigv4_auth(
     access_key: &str,
     secret_key: &str,
