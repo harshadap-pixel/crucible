@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod bedrock;
 pub mod ollama;
 pub mod openai_compat;
 pub mod script;
@@ -83,6 +84,8 @@ impl ModelRef {
     ///   mistral:         → Mistral  (MISTRAL_API_KEY)
     ///   openrouter:      → OpenRouter (OPENROUTER_API_KEY)
     ///   anthropic:       → Anthropic (ANTHROPIC_API_KEY)
+    ///   azure:           → Azure OpenAI (AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT)
+    ///   bedrock:         → AWS Bedrock (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY + AWS_DEFAULT_REGION)
     pub fn resolve(spec: &str, ollama_url: &str) -> Result<Self> {
         // Known cloud prefixes — check these before trying to split on ':'
         // because Ollama model tags also use ':' (e.g. "llama3.1:8b").
@@ -181,6 +184,39 @@ impl ModelRef {
             });
         }
 
+        // AWS Bedrock — model ID is the full Bedrock format, e.g.
+        // "bedrock:anthropic.claude-3-5-sonnet-20241022-v2:0"
+        // Note: model IDs themselves may contain ':' (version suffix) — that's fine
+        // because we only strip the leading "bedrock:" prefix.
+        if let Some(model_id) = spec.strip_prefix("bedrock:") {
+            let access_key = std::env::var("AWS_ACCESS_KEY_ID").unwrap_or_else(|_| {
+                eprintln!("  ⚠ AWS_ACCESS_KEY_ID not set — Bedrock calls will fail");
+                String::new()
+            });
+            let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_else(|_| {
+                eprintln!("  ⚠ AWS_SECRET_ACCESS_KEY not set — Bedrock calls will fail");
+                String::new()
+            });
+            // Optional: session token for IAM roles / SSO temporary credentials
+            let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
+            let region = std::env::var("AWS_DEFAULT_REGION")
+                .or_else(|_| std::env::var("AWS_REGION"))
+                .unwrap_or_else(|_| {
+                    eprintln!("  ⚠ AWS_DEFAULT_REGION not set — defaulting to us-east-1");
+                    "us-east-1".to_string()
+                });
+            let provider = Arc::new(bedrock::BedrockProvider::new(
+                &access_key,
+                &secret_key,
+                session_token,
+                &region,
+            ));
+            return Ok(Self {
+                provider,
+                model: model_id.to_string(),
+            });
+        }
+
         // "ollama:" explicit prefix or bare model name (backward-compat default)
         let model = spec.strip_prefix("ollama:").unwrap_or(spec).to_string();
         let provider = Arc::new(OllamaClient::new(ollama_url));
@@ -236,6 +272,10 @@ static CLOUD_PROVIDERS: &[(&str, &str, &str, &str)] = &[
 const AZURE_KEY_ENV: &str = "AZURE_OPENAI_API_KEY";
 const AZURE_ENDPOINT_ENV: &str = "AZURE_OPENAI_ENDPOINT";
 
+/// AWS Bedrock env vars — needs key ID + secret key to be configured.
+const AWS_KEY_ID_ENV: &str = "AWS_ACCESS_KEY_ID";
+const AWS_SECRET_ENV: &str = "AWS_SECRET_ACCESS_KEY";
+
 /// Scan the local environment and return every provider that is usable right now.
 ///
 /// - Pings Ollama and lists its models.
@@ -290,6 +330,26 @@ pub async fn detect_available(ollama_url: &str) -> Vec<AvailableProvider> {
         configured: azure_ok,
     });
 
+    // ── AWS Bedrock ───────────────────────────────────────────────────────────
+    // Needs both access key ID and secret key.
+    let aws_key_id = std::env::var(AWS_KEY_ID_ENV)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let aws_secret = std::env::var(AWS_SECRET_ENV)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let bedrock_ok = aws_key_id && aws_secret;
+    out.push(AvailableProvider {
+        name: "bedrock",
+        models: if bedrock_ok {
+            // Default to Claude 3.5 Sonnet on Bedrock as a sensible starting point.
+            vec!["bedrock:anthropic.claude-3-5-sonnet-20241022-v2:0".to_string()]
+        } else {
+            vec![]
+        },
+        configured: bedrock_ok,
+    });
+
     out
 }
 
@@ -317,6 +377,8 @@ pub fn coerce_judge(judge_spec: &str, eval_spec: &str) -> String {
         // Azure: mirror with the cheapest commonly-deployed model.
         // User can always override with --judge azure:{deployment}.
         ("azure:", "azure:gpt-4o-mini"),
+        // Bedrock: default to Haiku (cheapest Claude on Bedrock).
+        ("bedrock:", "bedrock:anthropic.claude-3-haiku-20240307-v1:0"),
     ];
     for (prefix, cheap) in cloud_mirror {
         if eval_spec.starts_with(prefix) {

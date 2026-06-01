@@ -74,6 +74,47 @@ pub async fn run(ollama_url: &str) -> Result<()> {
             continue;
         }
 
+        if p.name == "bedrock" {
+            if p.configured {
+                let region = std::env::var("AWS_DEFAULT_REGION")
+                    .or_else(|_| std::env::var("AWS_REGION"))
+                    .unwrap_or_else(|_| "us-east-1".to_string());
+                println!(
+                    "  {} {}  AWS_ACCESS_KEY_ID ✓  AWS_SECRET_ACCESS_KEY ✓  region={}",
+                    "●".green(),
+                    "bedrock".bold(),
+                    region,
+                );
+                println!(
+                    "      {}",
+                    "Use --model bedrock:<model-id>  e.g. bedrock:anthropic.claude-3-5-sonnet-20241022-v2:0".dimmed()
+                );
+            } else {
+                let key_id_ok = std::env::var("AWS_ACCESS_KEY_ID")
+                    .map(|v| !v.is_empty())
+                    .unwrap_or(false);
+                let secret_ok = std::env::var("AWS_SECRET_ACCESS_KEY")
+                    .map(|v| !v.is_empty())
+                    .unwrap_or(false);
+                println!(
+                    "  {} {}  AWS_ACCESS_KEY_ID {}  AWS_SECRET_ACCESS_KEY {}",
+                    "○".dimmed(),
+                    "bedrock".dimmed(),
+                    if key_id_ok {
+                        "✓".green()
+                    } else {
+                        "not set".red()
+                    },
+                    if secret_ok {
+                        "✓".green()
+                    } else {
+                        "not set".red()
+                    },
+                );
+            }
+            continue;
+        }
+
         let env_key = match p.name {
             "openai" => "OPENAI_API_KEY",
             "groq" => "GROQ_API_KEY",
