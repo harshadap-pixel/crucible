@@ -44,7 +44,7 @@ pub async fn run() -> Result<()> {
     let status = resp.status();
     let release: serde_json::Value = resp.json().await?;
 
-    // GitHub returns {"message":"..."} on errors (rate limit, not found, etc.)
+    // GitHub returns {"message":"..."} on errors (rate limit, 404, etc.)
     if !status.is_success() {
         let msg = release["message"]
             .as_str()
@@ -96,7 +96,15 @@ pub async fn run() -> Result<()> {
 
     // ── Download ──────────────────────────────────────────────────────────────
     print!("  Downloading {tag}... ");
-    let bytes = client.get(&download_url).send().await?.bytes().await?;
+    let resp = client.get(&download_url).send().await?;
+    if !resp.status().is_success() {
+        bail!("Download failed: HTTP {}", resp.status());
+    }
+    let bytes = resp.bytes().await?;
+
+    if bytes.is_empty() {
+        bail!("Downloaded binary is empty — aborting to protect the current install.");
+    }
     println!("{} ({} KB)", "done".green(), bytes.len() / 1024);
 
     // ── Replace current binary atomically ────────────────────────────────────
@@ -105,7 +113,7 @@ pub async fn run() -> Result<()> {
 
     std::fs::write(&tmp_path, &bytes)?;
 
-    // Make executable (unix only — on macOS/Linux)
+    // Make executable (unix only)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
