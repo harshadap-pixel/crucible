@@ -56,7 +56,8 @@ pub struct ModelsArgs {
 #[derive(Args, Debug)]
 pub struct AutodiscoverArgs {
     /// Directory to scan for AI code (eval runners, NL2SQL, RAG, etc.)
-    #[arg(short, long)]
+    /// Defaults to the current working directory.
+    #[arg(short, long, default_value = ".")]
     pub dir: String,
 
     /// Run generated suites immediately after discovery
