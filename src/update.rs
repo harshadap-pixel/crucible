@@ -37,15 +37,34 @@ pub async fn run() -> Result<()> {
     // ── Fetch latest release metadata ─────────────────────────────────────────
     print!("  Checking latest release... ");
     let client = reqwest::Client::builder()
-        .user_agent("crucible-updater")
+        .user_agent(format!("crucible/{}", env!("CARGO_PKG_VERSION")))
         .build()?;
 
-    let release: serde_json::Value = client.get(API_URL).send().await?.json().await?;
+    let resp = client.get(API_URL).send().await?;
+    let status = resp.status();
+    let release: serde_json::Value = resp.json().await?;
+
+    // GitHub returns {"message":"..."} on errors (rate limit, not found, etc.)
+    if !status.is_success() {
+        let msg = release["message"]
+            .as_str()
+            .unwrap_or("unexpected error from GitHub API");
+        bail!(
+            "GitHub API returned {status}: {msg}\n\
+             Check https://github.com/{REPO}/releases for the latest version."
+        );
+    }
 
     let tag = release["tag_name"]
         .as_str()
-        .unwrap_or("unknown")
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "GitHub API response missing 'tag_name' — no published release found.\n\
+                 Check https://github.com/{REPO}/releases"
+            )
+        })?
         .to_string();
+
     let current = env!("CARGO_PKG_VERSION");
 
     println!("{}", "done".green());
@@ -67,7 +86,13 @@ pub async fn run() -> Result<()> {
         })
         .and_then(|a| a["browser_download_url"].as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| anyhow::anyhow!("Asset '{asset}' not found in release {tag}"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Asset '{asset}' not found in release {tag}.\n\
+                 The release may still be building — try again in a few minutes.\n\
+                 https://github.com/{REPO}/releases/tag/{tag}"
+            )
+        })?;
 
     // ── Download ──────────────────────────────────────────────────────────────
     print!("  Downloading {tag}... ");
