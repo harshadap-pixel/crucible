@@ -27,20 +27,43 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      # ── Compute new version (don't commit yet) ────────────────────────────
       - name: Bump patch version in Cargo.toml
         id: version
         run: |
-          # Extract version robustly — handles 'version = "x"' or 'version     = "x"'
           CURRENT=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
           MAJOR=$(echo "$CURRENT" | cut -d. -f1)
           MINOR=$(echo "$CURRENT" | cut -d. -f2)
           PATCH=$(echo "$CURRENT" | cut -d. -f3)
           NEW="${MAJOR}.${MINOR}.$((PATCH + 1))"
-          # Replace the version string regardless of surrounding whitespace
           sed -i '' "s/^version[[:space:]]*=[[:space:]]*\"${CURRENT}\"/version = \"${NEW}\"/" Cargo.toml
           echo "tag=v${NEW}" >> "$GITHUB_OUTPUT"
           echo "Bumped ${CURRENT} → ${NEW}"
 
+      # ── Build both arches — if either fails, we stop before tagging ───────
+      - name: Build x86_64
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Build aarch64
+        run: cargo build --release --target aarch64-apple-darwin
+
+      # ── Only commit, tag, and push after a clean build ────────────────────
       - name: Commit & tag
         run: |
           git config user.name  "github-actions[bot]"
@@ -49,17 +72,6 @@ jobs:
           git commit -m "chore: release ${{ steps.version.outputs.tag }} [skip ci]"
           git tag "${{ steps.version.outputs.tag }}"
           git push origin main --tags
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin,aarch64-apple-darwin
-
-      - name: Build x86_64
-        run: cargo build --release --target x86_64-apple-darwin
-
-      - name: Build aarch64
-        run: cargo build --release --target aarch64-apple-darwin
 
       - name: Rename artifacts
         run: |
