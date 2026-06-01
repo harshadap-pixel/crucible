@@ -1079,18 +1079,49 @@ async fn run_test(
                 )
             } else {
                 // ── Single-turn model (default) ────────────────────────────────
-                let comp = eval_ref
+                let t0 = std::time::Instant::now();
+                match eval_ref
                     .provider
                     .chat(&eval_ref.model, test.system.as_deref(), &full_prompt, 0.0)
-                    .await?;
-                (
-                    comp.text,
-                    comp.latency_ms as u64,
-                    None,
-                    comp.ttft_ms,
-                    comp.input_tokens,
-                    comp.output_tokens,
-                )
+                    .await
+                {
+                    Ok(comp) => (
+                        comp.text,
+                        comp.latency_ms as u64,
+                        None,
+                        comp.ttft_ms,
+                        comp.input_tokens,
+                        comp.output_tokens,
+                    ),
+                    Err(e) => {
+                        // Azure (and some other providers) return a 400 content_filter
+                        // error when their safety layer blocks the prompt before the
+                        // model sees it.  Treat this as a synthetic refusal so that
+                        // refusal_check assertions pass and the test is not counted as
+                        // an infra error.
+                        let msg = e.to_string();
+                        if msg.contains("content_filter")
+                            || msg.contains("content management policy")
+                            || msg.contains("ResponsibleAIPolicyViolation")
+                        {
+                            let lat = t0.elapsed().as_millis() as u64;
+                            eprintln!(
+                                "  {} Content filter triggered — treating as refusal",
+                                "⚠".yellow()
+                            );
+                            (
+                                "[CONTENT_FILTERED] I cannot assist with that request.".to_string(),
+                                lat,
+                                Some(400u16),
+                                lat,
+                                0u32,
+                                0u32,
+                            )
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
             };
 
         let (score, assertion_results) = assertions::evaluate_all(

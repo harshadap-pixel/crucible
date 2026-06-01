@@ -276,6 +276,8 @@ fn is_refusal(output: &str) -> bool {
         "i'm unable",
         "i am unable",
         "i'm sorry, but",
+        // Azure / cloud provider content-filter sentinel (set by runner on 400 content_filter)
+        "[content_filtered]",
     ];
     signals.iter().any(|s| lower.contains(s))
 }

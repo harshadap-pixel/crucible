@@ -150,6 +150,37 @@ impl ModelRef {
             });
         }
 
+        // Azure OpenAI — deployment name after prefix, e.g. "azure:gpt-4o"
+        // Reads AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_VERSION.
+        if let Some(deployment) = spec.strip_prefix("azure:") {
+            let api_key = std::env::var("AZURE_OPENAI_API_KEY").unwrap_or_else(|_| {
+                eprintln!("  ⚠ AZURE_OPENAI_API_KEY not set — Azure calls may fail");
+                String::new()
+            });
+            let endpoint = std::env::var("AZURE_OPENAI_ENDPOINT").unwrap_or_else(|_| {
+                eprintln!("  ⚠ AZURE_OPENAI_ENDPOINT not set — Azure calls may fail");
+                String::new()
+            });
+            let api_version = std::env::var("AZURE_OPENAI_API_VERSION")
+                .unwrap_or_else(|_| "2025-01-01-preview".to_string());
+            // Azure URL: {endpoint}/openai/deployments/{deployment}
+            let base_url = format!(
+                "{}/openai/deployments/{}",
+                endpoint.trim_end_matches('/'),
+                deployment
+            );
+            let provider = Arc::new(openai_compat::OpenAICompatProvider::new_azure(
+                &base_url,
+                &api_key,
+                &api_version,
+                deployment,
+            ));
+            return Ok(Self {
+                provider,
+                model: deployment.to_string(),
+            });
+        }
+
         // "ollama:" explicit prefix or bare model name (backward-compat default)
         let model = spec.strip_prefix("ollama:").unwrap_or(spec).to_string();
         let provider = Arc::new(OllamaClient::new(ollama_url));
@@ -200,6 +231,11 @@ static CLOUD_PROVIDERS: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
+/// Azure OpenAI is detected separately because it needs two env vars
+/// (key + endpoint) and the default model depends on what's deployed.
+const AZURE_KEY_ENV: &str = "AZURE_OPENAI_API_KEY";
+const AZURE_ENDPOINT_ENV: &str = "AZURE_OPENAI_ENDPOINT";
+
 /// Scan the local environment and return every provider that is usable right now.
 ///
 /// - Pings Ollama and lists its models.
@@ -233,6 +269,27 @@ pub async fn detect_available(ollama_url: &str) -> Vec<AvailableProvider> {
         });
     }
 
+    // ── Azure OpenAI ──────────────────────────────────────────────────────────
+    // Needs both key AND endpoint to be configured.
+    let azure_key = std::env::var(AZURE_KEY_ENV)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let azure_endpoint = std::env::var(AZURE_ENDPOINT_ENV)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let azure_ok = azure_key && azure_endpoint;
+    out.push(AvailableProvider {
+        name: "azure",
+        models: if azure_ok {
+            // We don't know which deployments exist without calling the management API,
+            // so show a placeholder — user specifies the deployment name explicitly.
+            vec!["azure:gpt-4o".to_string()]
+        } else {
+            vec![]
+        },
+        configured: azure_ok,
+    });
+
     out
 }
 
@@ -257,6 +314,9 @@ pub fn coerce_judge(judge_spec: &str, eval_spec: &str) -> String {
             "together:meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
         ),
         ("openrouter:", "openrouter:openai/gpt-4o-mini"),
+        // Azure: mirror with the cheapest commonly-deployed model.
+        // User can always override with --judge azure:{deployment}.
+        ("azure:", "azure:gpt-4o-mini"),
     ];
     for (prefix, cheap) in cloud_mirror {
         if eval_spec.starts_with(prefix) {

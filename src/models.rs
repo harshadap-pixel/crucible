@@ -36,8 +36,45 @@ pub async fn run(ollama_url: &str) -> Result<()> {
     println!("\n  {}", "CLOUD".bold());
 
     let cloud: Vec<_> = providers.iter().filter(|p| p.name != "ollama").collect();
-    let env_var_for = |name: &str| -> &str {
-        match name {
+    for p in &cloud {
+        if p.name == "azure" {
+            if p.configured {
+                println!(
+                    "  {} {}  AZURE_OPENAI_API_KEY ✓  AZURE_OPENAI_ENDPOINT ✓",
+                    "●".green(),
+                    "azure".bold(),
+                );
+                println!(
+                    "      {}",
+                    "Use --model azure:<deployment>  e.g. azure:gpt-4o".dimmed()
+                );
+            } else {
+                let key_ok = std::env::var("AZURE_OPENAI_API_KEY")
+                    .map(|v| !v.is_empty())
+                    .unwrap_or(false);
+                let ep_ok = std::env::var("AZURE_OPENAI_ENDPOINT")
+                    .map(|v| !v.is_empty())
+                    .unwrap_or(false);
+                println!(
+                    "  {} {}  AZURE_OPENAI_API_KEY {}  AZURE_OPENAI_ENDPOINT {}",
+                    "○".dimmed(),
+                    "azure".dimmed(),
+                    if key_ok {
+                        "✓".green()
+                    } else {
+                        "not set".red()
+                    },
+                    if ep_ok {
+                        "✓".green()
+                    } else {
+                        "not set".red()
+                    },
+                );
+            }
+            continue;
+        }
+
+        let env_key = match p.name {
             "openai" => "OPENAI_API_KEY",
             "groq" => "GROQ_API_KEY",
             "anthropic" => "ANTHROPIC_API_KEY",
@@ -45,16 +82,13 @@ pub async fn run(ollama_url: &str) -> Result<()> {
             "together" => "TOGETHER_API_KEY",
             "openrouter" => "OPENROUTER_API_KEY",
             _ => "API_KEY",
-        }
-    };
-
-    for p in &cloud {
+        };
         if p.configured {
             println!(
                 "  {} {}  {} ✓",
                 "●".green(),
                 p.name.bold(),
-                env_var_for(p.name).dimmed(),
+                env_key.dimmed(),
             );
             for m in &p.models {
                 println!("      {}  (auto-selected default)", m.dimmed());
@@ -64,7 +98,7 @@ pub async fn run(ollama_url: &str) -> Result<()> {
                 "  {} {}  {} not set",
                 "○".dimmed(),
                 p.name.dimmed(),
-                env_var_for(p.name).dimmed(),
+                env_key.dimmed(),
             );
         }
     }
