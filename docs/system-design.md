@@ -1,6 +1,6 @@
 # Crucible — System Design
 
-> Version 0.1.12 · Local-first LLM evaluation for quality, RAG, agents, safety, and mechanism detection
+> Version 0.1.20 · LLM evaluation for quality, RAG, agents, safety, and mechanism detection — local and cloud
 
 ---
 
@@ -16,22 +16,21 @@ Evaluating local LLMs is painful in 2025. The existing tools all share a common 
 | Complex setup | API keys, Python envs, config files just to run one test |
 | No regression tracking | No baseline → no signal when a model update silently degrades output |
 
-Crucible's answer: **one static binary, no API keys, Ollama-native, with a built-in code scanner that detects what your AI pipeline actually does and generates tests targeting the precise failure modes of each detected strategy**.
+Crucible's answer: **one static binary, Ollama-native with full cloud provider support, and a built-in code scanner that detects what your AI pipeline actually does and generates tests targeting the precise failure modes of each detected strategy**.
 
 ---
 
 ## 2. Goals and Non-Goals
 
 ### Goals
-- Run locally with zero cloud dependencies
+- Run locally with Ollama or against any cloud provider with a single prefix change
 - Detect AI code patterns via static analysis and generate matching eval suites
 - Strategy-aware RAG evaluation (reranking, hybrid, HyDE, multi-query, chunking, etc.)
 - Persistent run history, regression baselines, and diff-based comparison
 - Dataset evaluation with MMLU preset, template expansion, and slice analysis
-- Single binary install — `cargo install` or `curl | sh`
+- Single binary install — `cargo install` or `crucible update`
 
 ### Non-Goals
-- Cloud model evaluation (GPT, Claude via API) — out of scope in current version
 - Real-time production monitoring
 - Fine-tuning or training data generation
 - UI / web dashboard (terminal-first by design)
@@ -98,6 +97,7 @@ crucible
 ├── compare     CompareArgs      — diff two run IDs
 ├── report      ReportArgs       — run history
 ├── status                       — summary of suites + current baseline
+├── models                       — list detected providers + configured API keys
 ├── autodiscover AutodiscoverArgs — scan codebase + generate suites
 └── update                       — self-update from GitHub releases
 ```
@@ -144,15 +144,39 @@ RunArgs
 
 ### 4.3 Providers (`src/providers/`)
 
-Three pluggable providers, selected from suite config:
+All providers implement the `Provider` trait (`chat`, `chat_with_history`, `name`). A model is addressed via a URI-prefix string resolved by `ModelRef::resolve()`:
 
-| Provider | Config key | Transport | Use case |
-|----------|------------|-----------|----------|
-| `OllamaClient` | _(default)_ | HTTP streaming | Local model via Ollama |
-| `HttpProvider` | `[suite.http]` | HTTP POST | Live API endpoint testing |
-| `ScriptProvider` | `[suite.script]` | subprocess stdin/stdout | Adapter scripts, custom runners |
+| Prefix | Provider | Auth | Transport |
+|--------|----------|------|-----------|
+| _(none)_ or `ollama:` | `OllamaClient` | none | HTTP streaming (Ollama) |
+| `openai:` | `OpenAICompatProvider` | `OPENAI_API_KEY` | SSE streaming |
+| `groq:` | `OpenAICompatProvider` | `GROQ_API_KEY` | SSE streaming |
+| `together:` | `OpenAICompatProvider` | `TOGETHER_API_KEY` | SSE streaming |
+| `mistral:` | `OpenAICompatProvider` | `MISTRAL_API_KEY` | SSE streaming |
+| `openrouter:` | `OpenAICompatProvider` | `OPENROUTER_API_KEY` | SSE streaming |
+| `anthropic:` | `AnthropicProvider` | `ANTHROPIC_API_KEY` | SSE streaming |
+| `azure:` | `OpenAICompatProvider` (Azure mode) | `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` | SSE streaming |
+| `bedrock:` | `BedrockProvider` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` | HTTPS (non-streaming) |
+| `[suite.http]` | `HttpProvider` | per-suite headers | HTTP POST |
+| `[suite.script]` | `ScriptProvider` | n/a | subprocess stdin/stdout |
 
 **Ollama streaming** captures TTFT (time to first token) by timing the gap between `POST /api/generate` and the first streamed chunk. Full latency is end-to-end wall time. Token counts come from Ollama's `eval_count` / `prompt_eval_count` fields in the final chunk.
+
+**OpenAI-compatible providers** (`OpenAICompatProvider`) use SSE streaming (`data: {...}` lines, `[DONE]` sentinel) with `stream_options: { include_usage: true }` to capture token counts in the final chunk. TTFT is recorded on the first non-empty content delta.
+
+**Azure OpenAI** has three quirks handled automatically:
+- Auth: `api-key` header (not `Authorization: Bearer`)
+- Newer models require `max_completion_tokens` instead of `max_tokens`
+- o-series / reasoning models reject explicit `temperature` — omitted entirely. Detected via `is_reasoning_deployment()` heuristic (o1*, o3*, *codex*, gpt-5*, *-chat)
+- Content-filter 400 responses (`content_filter` / `ResponsibleAIPolicyViolation`) are caught and converted to a synthetic `[CONTENT_FILTERED]` refusal, triggering `refusal_check` assertions correctly
+
+**Anthropic** uses the Messages API SSE format: `message_start` (input tokens), `content_block_delta` (text chunks), `message_delta` (output tokens + stop reason).
+
+**AWS Bedrock** (`BedrockProvider`) uses the Converse API — a unified non-streaming interface across all Bedrock model families (Claude, Llama, Mistral, Titan, Cohere). Request signing uses hand-rolled SigV4 (`AWS4-HMAC-SHA256`) via the `hmac` + `sha2` crates. Supports `AWS_SESSION_TOKEN` for IAM roles and SSO. TTFT equals total latency (non-streaming). Model IDs use full Bedrock format, e.g. `anthropic.claude-3-5-sonnet-20241022-v2:0`.
+
+**Judge auto-coercion** (`coerce_judge()`): when the judge is still the default `llama3.1:8b` but the eval model uses a cloud prefix, the judge is automatically mirrored to the cheapest model on the same provider (e.g. `openai:gpt-4o-mini`, `anthropic:claude-3-haiku-20240307-v1:0`). This prevents failures when Ollama is not running.
+
+**Provider detection** (`detect_available()`): scans env vars at startup and reports which providers are configured. `crucible models` displays the full status table. `auto_select_model()` picks the best available model in priority order: Ollama (local, free) → Groq → OpenAI → Anthropic → …
 
 ### 4.4 Assertions (`src/assertions/`)
 
@@ -175,7 +199,9 @@ Weighted scoring model. Every assertion carries an optional `weight` (default: `
 | `refusal_check` | deterministic | Heuristic: does output contain a refusal pattern? |
 | `tool_not_called` | deterministic | Tool name absent from JSON output |
 
-**LLM judge flow**: Sends a structured prompt to the judge model asking for a score 0–10 with brief reasoning. Parses the first integer from the response, divides by 10, applies threshold. Judge model defaults to `llama3.1:8b`; overridable per-suite or via `--judge`.
+**LLM judge flow**: Sends a structured prompt to the judge model asking for a score 0–10 with brief reasoning. Parses the first integer from the response, divides by 10, applies threshold. Judge model defaults to `llama3.1:8b`; overridable per-suite or via `--judge`. When the eval model is a cloud provider, `coerce_judge()` automatically upgrades the judge to a matching cloud model so Ollama doesn't need to be running.
+
+**Per-test system prompts**: `TestCase` supports an optional `system` field that overrides the suite-level system prompt for individual tests.
 
 **Semantic similarity**: Embeds both the model output and the reference string using Ollama's `/api/embeddings` endpoint, computes cosine similarity.
 
@@ -474,9 +500,9 @@ assert = [
 
 No Python environment, no Docker, no config files required. Install with `curl | sh`. Trades build-time complexity (Rust + cargo) for zero runtime dependencies. `rusqlite` is bundled; `rust-embed` bakes suites in.
 
-### 7.2 Ollama-First, Not Cloud-First
+### 7.2 Ollama-First with Full Cloud Support
 
-Every design decision optimises for local model evaluation. Cloud providers (OpenAI, Anthropic) can be reached via the HTTP provider mode using adapter scripts, but are not first-class. This is intentional — it preserves data locality and eliminates API costs for iterative evaluation during development.
+The default and recommended path is local Ollama — zero cost, full privacy, no API keys. Cloud providers are first-class citizens via URI prefixes (`openai:`, `anthropic:`, `azure:`, `bedrock:`, `groq:`, `mistral:`, `together:`, `openrouter:`). This covers the full spectrum from air-gapped local dev to enterprise cloud deployments without changing the suite format.
 
 ### 7.3 Weighted Multi-Assertion Scoring
 
@@ -510,10 +536,9 @@ TOML 1.0 spec: inline tables `{ key = value }` must be on a single line. Multi-l
 
 ### Binary Distribution
 
-GitHub Actions (`release.yml`) builds and publishes on every tag push (`v*`):
+GitHub Actions (`release.yml`) builds and publishes on every push to `main` (after a successful build — tagging only happens post-build to prevent dangling tags from failed runs):
 - `x86_64-apple-darwin`
 - `aarch64-apple-darwin` (Apple Silicon)
-- `x86_64-unknown-linux-gnu`
 
 Build flags: `opt-level=3`, `lto=true`, `codegen-units=1`, `strip=true` → compact release binaries.
 
@@ -538,7 +563,7 @@ cargo test
 
 ## 9. Competitive Landscape
 
-| Tool | Code Scanning | Strategy Detection | Local-first | Self-contained |
+| Tool | Code Scanning | Strategy Detection | Local + Cloud | Self-contained |
 |------|:---:|:---:|:---:|:---:|
 | **Crucible** | ✅ | ✅ | ✅ | ✅ |
 | RAGAS | ❌ | ❌ | ❌ | ❌ |
@@ -556,9 +581,13 @@ All existing tools operate on Q&A pairs you provide. Crucible is the only evalua
 
 ### Adding a New Provider
 
-1. Implement `async fn generate(prompt, system) -> Result<(String, u64, u64, u32, u32)>` (output, latency_ms, ttft_ms, input_tokens, output_tokens)
-2. Add a new config key in `SuiteMeta` (e.g. `[suite.openai]`)
-3. Select the provider in `runner.rs` based on the config key presence
+1. Implement the `Provider` trait in `src/providers/`:
+   - `async fn chat(model, system, user, temperature) -> Result<CompletionResult>`
+   - `async fn chat_with_history(model, history, final_user, temperature) -> Result<CompletionResult>`
+   - `fn name() -> &'static str`
+2. Add `pub mod your_provider;` to `src/providers/mod.rs`
+3. Add a URI prefix branch in `ModelRef::resolve()` (e.g. `if let Some(m) = spec.strip_prefix("myprovider:")`)
+4. Add env var detection in `detect_available()` and a mirror entry in `coerce_judge()`
 
 ### Adding a New Assertion Type
 
@@ -583,9 +612,10 @@ Drop a `.toml` file under `suites/` — `rust-embed` picks it up at next compile
 
 | Limitation | Current Behaviour | Potential Fix |
 |------------|-----------------|---------------|
-| Ollama must be running | Test fails with connection error | Timeout + clear error message |
+| Ollama must be running for semantic assertions | Embedding calls fail with connection error | Fallback to cloud embedding endpoint |
 | No streaming progress for LLM judge calls | Looks frozen on slow judge models | Progress spinner per assertion |
 | Generated suites have hardcoded prompts | No actual RAG context — tests assert model behaviour, not retrieval | Accept `--context` flag to inject real documents |
 | Code scanner is text-pattern based | Can miss dynamic patterns, obfuscated imports | AST-based analysis (tree-sitter) |
 | Single SQLite file | Not shareable across machines | Export/import command |
-| No Windows binary | CI only builds macOS + Linux | Add `x86_64-pc-windows-msvc` target |
+| No Windows or Linux binary | CI only builds macOS (x86_64 + aarch64) | Add `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` targets |
+| Bedrock Converse API is non-streaming | TTFT equals total latency | Use Bedrock streaming API |
