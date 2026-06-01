@@ -209,6 +209,13 @@ Weighted scoring model. Every assertion carries an optional `weight` (default: `
 
 The most differentiated component. Scans a codebase statically, detects AI patterns, then generates targeted eval suites.
 
+```bash
+# --dir defaults to current working directory
+crucible autodiscover                   # scan CWD
+crucible autodiscover --dir ./my-app   # scan explicit path
+crucible autodiscover --run            # scan CWD + execute suites immediately
+```
+
 ```
 scan(dir)
   └─ walk_dir() — recursive, skip venvs/node_modules/build artifacts
