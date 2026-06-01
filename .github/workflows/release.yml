@@ -44,6 +44,8 @@ jobs:
             ${{ runner.os }}-cargo-release-
 
       # ── Compute new version (don't commit yet) ────────────────────────────
+      # Increments patch and skips any versions whose tags already exist on
+      # the remote (left over from previous failed runs).
       - name: Bump patch version in Cargo.toml
         id: version
         run: |
@@ -51,9 +53,22 @@ jobs:
           MAJOR=$(echo "$CURRENT" | cut -d. -f1)
           MINOR=$(echo "$CURRENT" | cut -d. -f2)
           PATCH=$(echo "$CURRENT" | cut -d. -f3)
-          NEW="${MAJOR}.${MINOR}.$((PATCH + 1))"
+
+          # Walk forward until we find a patch that has no remote tag yet.
+          # This handles stale tags left by previously failed release runs.
+          while true; do
+            PATCH=$((PATCH + 1))
+            NEW="${MAJOR}.${MINOR}.${PATCH}"
+            TAG="v${NEW}"
+            if ! git ls-remote --tags origin "refs/tags/${TAG}" | grep -q "${TAG}"; then
+              break
+            fi
+            echo "Tag ${TAG} already exists on remote — skipping to next patch"
+          done
+
           sed -i '' "s/^version[[:space:]]*=[[:space:]]*\"${CURRENT}\"/version = \"${NEW}\"/" Cargo.toml
-          echo "tag=v${NEW}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "new_version=${NEW}" >> "$GITHUB_OUTPUT"
           echo "Bumped ${CURRENT} → ${NEW}"
 
       # ── Build both arches — if either fails, we stop before tagging ───────
@@ -71,6 +86,8 @@ jobs:
           git add Cargo.toml
           git commit -m "chore: release ${{ steps.version.outputs.tag }} [skip ci]"
           git tag "${{ steps.version.outputs.tag }}"
+          # Pull any commits that landed while we were building, then push.
+          git pull --rebase origin main
           git push origin main --tags
 
       - name: Rename artifacts
