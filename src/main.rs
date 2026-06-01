@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Command};
-use crucible::{cli, detect, discover, regression, report, runner, store, update};
+use crucible::{cli, detect, discover, models, regression, report, runner, store, update};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,6 +21,7 @@ async fn main() -> Result<()> {
         Command::Report(args) => report::history(args).await,
         Command::Status => store::status().await,
         Command::Autodiscover(args) => discover::run(args).await,
+        Command::Models(args) => models::run(&args.ollama_url).await,
         Command::Update => update::run().await,
     }
 }

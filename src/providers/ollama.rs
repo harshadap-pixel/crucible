@@ -1,7 +1,10 @@
 use anyhow::{bail, Result};
+use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
+
+use super::{CompletionResult, Provider};
 
 // ── Request / Response types ──────────────────────────────────────────────────
 
@@ -54,6 +57,32 @@ struct EmbedResponse {
     embeddings: Vec<Vec<f32>>,
 }
 
+// ── Model list ────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LocalModel {
+    pub name: String,
+    /// Size in bytes
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub details: LocalModelDetails,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct LocalModelDetails {
+    #[serde(default)]
+    pub parameter_size: String,
+    #[serde(default)]
+    pub quantization_level: String,
+}
+
+#[derive(Deserialize)]
+struct TagsResponse {
+    #[serde(default)]
+    models: Vec<LocalModel>,
+}
+
 // ── Model show / metadata ─────────────────────────────────────────────────────
 
 #[derive(Deserialize, Debug, Clone, Default)]
@@ -73,18 +102,6 @@ pub struct ModelDetails {
     #[allow(dead_code)]
     #[serde(default)]
     pub families: Vec<String>,
-}
-
-// ── Completion result ─────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub struct CompletionResult {
-    pub text: String,
-    pub latency_ms: u128,
-    /// Time from request sent to first token received (0 if not applicable).
-    pub ttft_ms: u64,
-    pub input_tokens: u32,
-    pub output_tokens: u32,
 }
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -327,6 +344,26 @@ impl OllamaClient {
         })
     }
 
+    /// List all locally available models from /api/tags.
+    /// Returns an empty vec if Ollama is unreachable.
+    pub async fn list_models(&self) -> Vec<LocalModel> {
+        let Ok(resp) = self
+            .client
+            .get(format!("{}/api/tags", self.base_url))
+            .send()
+            .await
+        else {
+            return vec![];
+        };
+        if !resp.status().is_success() {
+            return vec![];
+        }
+        resp.json::<TagsResponse>()
+            .await
+            .map(|r| r.models)
+            .unwrap_or_default()
+    }
+
     /// Check if Ollama is reachable
     pub async fn health(&self) -> bool {
         self.client
@@ -356,5 +393,35 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         0.0
     } else {
         dot / (mag_a * mag_b)
+    }
+}
+
+// ── Provider trait impl ───────────────────────────────────────────────────────
+
+#[async_trait]
+impl Provider for OllamaClient {
+    async fn chat(
+        &self,
+        model: &str,
+        system: Option<&str>,
+        user: &str,
+        temperature: f32,
+    ) -> Result<CompletionResult> {
+        self.chat(model, system, user, temperature).await
+    }
+
+    async fn chat_with_history(
+        &self,
+        model: &str,
+        history: &[(String, String)],
+        final_user: &str,
+        temperature: f32,
+    ) -> Result<CompletionResult> {
+        self.chat_with_history(model, history, final_user, temperature)
+            .await
+    }
+
+    fn name(&self) -> &'static str {
+        "ollama"
     }
 }

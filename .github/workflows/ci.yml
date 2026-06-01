@@ -3,8 +3,25 @@ name: CI
 on:
   push:
     branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - ".github/workflows/**"
   pull_request:
     branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - ".github/workflows/**"
+
+# Cancel any in-progress run for the same branch/PR when a new commit is pushed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,7 +36,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest] # windows-latest excluded — release is macOS-only
+        # ubuntu: primary CI target (fast, cheap)
+        # macos:  compilation check only — release artifacts are built in release.yml
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +56,8 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -44,14 +65,14 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Build
-        run: cargo build --release
+      # Debug build — fast compilation check. Release binaries are produced
+      # by release.yml and are not needed here.
+      - name: Build (debug)
+        run: cargo build
 
       - name: Run unit tests
         run: cargo test --lib
 
       - name: Smoke test binary
         shell: bash
-        run: |
-          ./target/release/crucible --version || \
-          ./target/release/crucible.exe --version
+        run: ./target/debug/crucible --version

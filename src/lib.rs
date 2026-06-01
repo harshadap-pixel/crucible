@@ -6,6 +6,7 @@ pub mod detect;
 pub mod discover;
 pub mod embedded;
 pub mod leaderboard;
+pub mod models;
 pub mod providers;
 pub mod regression;
 pub mod report;

@@ -32,11 +32,12 @@ pub async fn run(
     );
     println!("{}", "═".repeat(68).dimmed());
 
-    let client = Arc::new(OllamaClient::new(&args.ollama_url));
+    let embed_client = Arc::new(OllamaClient::new(&args.ollama_url));
     let mut outcomes: Vec<SuiteOutcome> = Vec::new();
 
     for model in &args.models {
-        let outcome = execute_suite(suite_path, Some(model), &args, &cli_vars, &client).await?;
+        let outcome =
+            execute_suite(suite_path, Some(model), &args, &cli_vars, &embed_client).await?;
         outcomes.push(outcome);
     }
 

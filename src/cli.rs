@@ -35,8 +35,20 @@ pub enum Command {
     /// Scan a codebase for AI patterns and auto-generate + run eval suites
     Autodiscover(AutodiscoverArgs),
 
+    /// List available local models and configured cloud providers
+    Models(ModelsArgs),
+
     /// Update crucible to the latest release
     Update,
+}
+
+// ── models ────────────────────────────────────────────────────────────────────
+
+#[derive(Args, Debug)]
+pub struct ModelsArgs {
+    /// Ollama base URL to probe for local models
+    #[arg(long, default_value = "http://localhost:11434", env = "OLLAMA_HOST")]
+    pub ollama_url: String,
 }
 
 // ── autodiscover ──────────────────────────────────────────────────────────────
@@ -64,7 +76,7 @@ pub struct AutodiscoverArgs {
     pub judge: Option<String>,
 
     /// Ollama base URL (used when --run is set)
-    #[arg(long, default_value = "http://localhost:11434")]
+    #[arg(long, default_value = "http://localhost:11434", env = "OLLAMA_HOST")]
     pub ollama_url: String,
 }
 
@@ -123,7 +135,7 @@ pub struct RunArgs {
     pub models: Vec<String>,
 
     /// Ollama base URL
-    #[arg(long, default_value = "http://localhost:11434")]
+    #[arg(long, default_value = "http://localhost:11434", env = "OLLAMA_HOST")]
     pub ollama_url: String,
 
     // ── Execution behaviour ───────────────────────────────────────────────────
@@ -171,7 +183,7 @@ pub struct DetectArgs {
     pub model: String,
 
     /// Ollama base URL
-    #[arg(long, default_value = "http://localhost:11434")]
+    #[arg(long, default_value = "http://localhost:11434", env = "OLLAMA_HOST")]
     pub ollama_url: String,
 
     /// Path to pipeline config file (YAML/TOML) for static analysis

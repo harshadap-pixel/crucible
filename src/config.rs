@@ -46,6 +46,8 @@ fn default_http_timeout_ms() -> u64 {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SuiteMeta {
     pub name: String,
+    /// Model spec string. Empty string or "auto" triggers auto-detection at runtime.
+    #[serde(default)]
     pub model: String,
     #[serde(default = "default_judge")]
     pub judge: String,
@@ -101,6 +103,11 @@ pub struct Turn {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TestCase {
     pub name: String,
+
+    /// Optional system prompt for this test case.
+    /// Overrides any suite-level system prompt when set.
+    #[serde(default)]
+    pub system: Option<String>,
 
     /// Final user prompt (or full prompt for single-turn tests).
     /// For multi-turn tests this is appended as the last user turn.

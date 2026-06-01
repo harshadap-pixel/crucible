@@ -1,5 +1,5 @@
 use crate::assertions::AssertionResult;
-use crate::providers::OllamaClient;
+use crate::providers::ModelRef;
 use anyhow::Result;
 
 const SYSTEM: &str = "\
@@ -9,8 +9,7 @@ Reply with ONLY a JSON object: {\"score\": <float>, \"reason\": \"<one sentence>
 No other text.";
 
 pub async fn check(
-    client: &OllamaClient,
-    judge: &str,
+    judge: &ModelRef,
     output: &str,
     rubric: &str,
     threshold: f64,
@@ -22,7 +21,11 @@ pub async fn check(
     // Retry up to 3 times — smaller models sometimes return malformed JSON
     let mut last_err = String::new();
     for attempt in 0..3u8 {
-        match client.chat(judge, Some(SYSTEM), &prompt, 0.0).await {
+        match judge
+            .provider
+            .chat(&judge.model, Some(SYSTEM), &prompt, 0.0)
+            .await
+        {
             Ok(result) => {
                 if let Some((score, reason)) = parse_judge_response(&result.text) {
                     let passed = score >= threshold;

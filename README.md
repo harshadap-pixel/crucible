@@ -1,18 +1,22 @@
 # 🔥 Crucible
 
-> Local-first LLM evaluation — quality, RAG, agents, safety, and mechanism detection in one binary.
+> Model-agnostic LLM evaluation — quality, RAG, agents, safety, and mechanism detection in one binary.
 
-**No Python. No Node. No cloud account. Just [Ollama](https://ollama.com).**
+**No Python. No Node. No config files. Works with Ollama, OpenAI, Anthropic, Groq, and more.**
 
 Every other eval tool tests what your model **outputs**.  
 Crucible also tests what your pipeline **is**.
 
 ```
-crucible run --model llama3:latest --judge llama3:latest
+crucible run --suite suites/default.toml
 
-Run #a1b2c3d4  2026-05-30 14:23  model: llama3:latest
+  → Auto-selected model: llama3.1:8b (ollama)
+
+RUNNING default — 5 test(s) — model: llama3.1:8b
+──────────────────────────────────────────────────────────────
+Run #a1b2c3d4  2026-05-31 09:14  model: llama3.1:8b
 ────────────────────────────────────────────────────────────────────────────
-TEST                          SCORE   STATUS    LATENCY   TTFT    DELTA   FLAG
+TEST                          SCORE   STATUS    LATENCY   TTFT    DELTA
 basic_factual                 1.000   ✅ PASS    312ms     48ms    +0.00
 json_output                   1.000   ✅ PASS    289ms     61ms    +0.00
 no_hallucination_on_unknown   0.920   ✅ PASS    401ms     74ms    -0.02
@@ -30,15 +34,19 @@ SUMMARY   5/5 passed   avg score: 0.954   ✓ no regressions
 |---|---|---|---|---|
 | Single binary | ❌ Node | ❌ Python | ❌ Python | ✅ |
 | Ollama-native | ✅ | ✅ | 🟡 | ✅ |
+| OpenAI / Anthropic / Groq | ✅ | ✅ | ✅ | ✅ |
+| **Auto-detect provider from env** | ❌ | ❌ | ❌ | ✅ |
 | RAG eval | 🟡 | ✅ | ✅ | ✅ |
+| **Strategy-aware RAG tests** | ❌ | ❌ | ❌ | ✅ |
 | Agent + safety | ✅ | ✅ | ❌ | ✅ |
 | **Full OWASP LLM Top 10** | 🟡 partial | 🟡 partial | ❌ | ✅ all 10 |
 | **Mechanism detection** | ❌ | ❌ | ❌ | ✅ |
 | **MoE detection** | ❌ | ❌ | ❌ | ✅ |
-| **RAG fallback probes** | ❌ | ❌ | ❌ | ✅ |
+| **Dataset evaluation (JSONL/CSV)** | ✅ | ✅ | ❌ | ✅ |
+| **MMLU preset** | ❌ | ❌ | ❌ | ✅ |
 | **TTFT measurement** | ❌ | ❌ | ❌ | ✅ |
 | **Model leaderboard** | ❌ | ❌ | ❌ | ✅ |
-| **Autodiscovery** | ❌ | ❌ | ❌ | ✅ |
+| **Codebase autodiscovery** | ❌ | ❌ | ❌ | ✅ |
 | **Self-update** | ❌ | ❌ | ❌ | ✅ |
 | Regression tracking | 🟡 | ❌ | ❌ | ✅ |
 | Embedded SQLite | ✅ | ❌ | ❌ | ✅ |
@@ -79,8 +87,6 @@ cargo install --git https://github.com/harshadap-pixel/crucible
 
 ### Updating
 
-Once installed, update to the latest release with a single command — no `gh` needed:
-
 ```bash
 crucible update
 ```
@@ -92,33 +98,114 @@ Crucible detects your OS and architecture, downloads the right binary, and repla
 ## Quick Start
 
 ```bash
-# 1. Start Ollama with any model
-ollama serve
-ollama pull llama3:latest
+# Option A — Local (Ollama)
+ollama serve && ollama pull llama3.1:8b
+crucible run                          # auto-detects the local model
 
-# 2. Run the default suite from anywhere — no project checkout needed
-crucible run --model llama3:latest --judge llama3:latest
+# Option B — Cloud (any provider key already in your shell)
+export OPENAI_API_KEY=sk-...
+crucible run                          # auto-detects OpenAI, picks gpt-4o-mini
 
-# 3. Set this run as your regression baseline
+# Option C — Explicit model
+crucible run --model anthropic:claude-3-5-haiku-latest \
+             --judge groq:llama-3.1-8b-instant
+
+# Set a regression baseline, then compare future runs automatically
 crucible baseline set
-
-# 4. Make a change (swap model, tweak prompt, update RAG config...)
-# 5. Run again — Crucible flags regressions automatically
-crucible run --model llama3:latest --judge llama3:latest --compare
+crucible run --compare
 ```
 
 Suites are embedded in the binary and extracted automatically on first run. You never need to clone the repo.
 
 ---
 
+## Providers
+
+Crucible is model-agnostic. Specify the provider with a prefix on the model name:
+
+| Prefix | Provider | Key env var |
+|--------|----------|-------------|
+| _(none)_ | Ollama (local) | — |
+| `ollama:` | Ollama (explicit) | — |
+| `openai:` | OpenAI | `OPENAI_API_KEY` |
+| `anthropic:` | Anthropic | `ANTHROPIC_API_KEY` |
+| `groq:` | Groq | `GROQ_API_KEY` |
+| `mistral:` | Mistral | `MISTRAL_API_KEY` |
+| `together:` | Together AI | `TOGETHER_API_KEY` |
+| `openrouter:` | OpenRouter | `OPENROUTER_API_KEY` |
+
+```bash
+# All of these work with the same suite files
+crucible run --model llama3.1:8b
+crucible run --model openai:gpt-4o
+crucible run --model anthropic:claude-3-5-sonnet-latest
+crucible run --model groq:llama-3.1-70b-versatile
+crucible run --model mistral:mistral-large-latest
+
+# Mix providers: evaluate with one, judge with another
+crucible run --model openai:gpt-4o \
+             --judge groq:llama-3.1-8b-instant
+```
+
+Keys are read from environment variables — never from config files.
+
+### Auto-detection
+
+When no `--model` is specified, Crucible scans your environment and picks the best available option — Ollama first (local, free, private), then cloud providers in order of cost.
+
+```bash
+# See what's available
+crucible models
+
+AVAILABLE PROVIDERS
+
+  LOCAL
+  ● ollama  (2 model(s))
+      llama3.1:8b
+      nomic-embed-text
+
+  CLOUD
+  ● groq    GROQ_API_KEY ✓
+      groq:llama-3.1-8b-instant  (auto-selected default)
+  ● openai  OPENAI_API_KEY ✓
+      openai:gpt-4o-mini  (auto-selected default)
+  ○ anthropic  ANTHROPIC_API_KEY not set
+
+  → Auto-select would pick: llama3.1:8b
+
+  Run without --model and crucible will use this automatically.
+```
+
+You can also opt in explicitly in a suite:
+
+```toml
+[suite]
+name  = "my-suite"
+model = "auto"    # always picks the best available at runtime
+```
+
+### Testing the OpenAI-compat path against Ollama (no API key)
+
+Ollama exposes an OpenAI-compatible endpoint at `/v1`. Use it to validate the full cloud provider path locally:
+
+```bash
+crucible run --model openai:llama3.1:8b \
+             --ollama-url http://localhost:11434/v1
+# OPENAI_API_KEY not needed — set to anything or leave unset
+```
+
+---
+
 ## Commands
 
 ```
-crucible run           [--suite <path>] [--model <name>] [--judge <name>]
-crucible run           --models model1,model2,model3    # leaderboard mode
-crucible run           --dir <category>                 # run all suites in a dir
-crucible autodiscover  --dir <codebase> --model <name> --judge <name> [--run]
-crucible detect        --model <name>   [--pipeline-config <path>]
+crucible run           [--suite <path>] [--model <spec>] [--judge <spec>]
+crucible run           --models a,b,c                  # leaderboard mode
+crucible run           --dir <category>                # run all suites in dir
+crucible run           --dataset <file> --template <suite>  # dataset eval
+crucible models                                        # list available providers
+crucible autodiscover  --dir <codebase> [--run]
+crucible detect        --model <name>
 crucible baseline      set | show
 crucible compare       <run-id-a> <run-id-b>
 crucible report        [--last N] [--suite <name>]
@@ -128,44 +215,86 @@ crucible update
 
 ---
 
-## Autodiscovery
+## Dataset Evaluation
 
-Point Crucible at any codebase — it detects what AI patterns are in use and automatically runs the matching built-in suites:
+Run a suite against every row in a JSONL or CSV file. Use `{{field}}` in prompts to reference columns.
 
 ```bash
-crucible autodiscover --dir ~/my-project \
-  --model llama3:latest --judge llama3:latest --run
+crucible run \
+  --dataset questions.jsonl \
+  --template suites/my_qa.toml \
+  --model openai:gpt-4o-mini \
+  --slice-by category
+```
+
+```toml
+# suites/my_qa.toml
+[suite]
+name = "QA dataset"
+
+[[tests]]
+name   = "{{id}}"
+prompt = "{{question}}"
+assert = [
+  { type = "contains",  value = "{{expected}}" },
+  { type = "llm_judge", rubric = "Answer is correct and concise.", threshold = 0.8 },
+]
+```
+
+MMLU CSV files (question / A / B / C / D / answer columns) are auto-detected and normalised — no extra config needed:
+
+```bash
+crucible run --dataset mmlu_test.csv --template suites/benchmark/classify.toml \
+             --model groq:llama-3.1-70b-versatile --slice-by subject
+```
+
+---
+
+## Autodiscovery
+
+Point Crucible at any codebase — it scans for AI patterns, detects exactly which RAG strategies you're using, and generates targeted tests for each one:
+
+```bash
+crucible autodiscover --dir ~/my-project --run
 ```
 
 ```
 AUTODISCOVER ~/my-project
 ──────────────────────────────────────────────────────────────
-  Scanning for AI code patterns...
-
   2 finding(s):
 
-  ▸ RAG pipeline — ONNX embeddings + USearch HNSW
-    src/rag/pipeline.ts
-    signals: onnxruntime, usearch, top_k
+  ▸ RAG pipeline — hybrid retrieval + cross-encoder reranking
+    src/rag/pipeline.py
+    signals: BM25Retriever, CrossEncoderRanker, RecursiveCharacterTextSplitter
 
   ▸ AI service — Anthropic Claude
-    src/services/llm.ts
+    src/services/llm.py
     signals: anthropic
-
-──────────────────────────────────────────────────────────────
-  3 bundled suite(s) matched:
-
-  → faithfulness.toml
-  → fallback_chain.toml
-  → owasp_llm01_injection.toml
 ```
+
+### Strategy-aware RAG test generation
+
+Crucible detects five RAG dimensions from your code and emits tests targeting the specific failure mode of each:
+
+| Detected | Generated test | What it catches |
+|----------|---------------|-----------------|
+| Chunking strategy | Chunk boundary test | Answer split across chunk boundary |
+| Reranker | Reranker sensitivity | Lexical match demoted by semantic reranking |
+| Hybrid retrieval | Keyword + semantic tests | BM25 lane vs. vector lane coverage |
+| HyDE | Abstract query test | No shared vocabulary between question and source |
+| Multi-query | Disambiguation test | Ambiguous term resolved via multiple query angles |
+| Late chunking | Cross-sentence test | Context requiring late token binding |
+| Parent document | Parent scope test | Small chunk matches, answer needs full parent |
+| Contextual compression | Extraction test | 90% noise, extract one relevant sentence |
+
+No other eval tool inspects your code. Crucible is the only evaluator that knows *what* your pipeline does before it generates tests.
 
 | Code pattern detected | Suites automatically run |
 |---|---|
-| RAG pipeline | `rag/faithfulness.toml`, `rag/fallback_chain.toml` |
+| RAG pipeline | `rag/faithfulness.toml`, `rag/fallback_chain.toml` + strategy-specific suite |
 | AI service / eval runner | `default.toml`, `safety/owasp_llm01_injection.toml` |
 | MCP server | `default.toml`, `safety/owasp_llm01_injection.toml` |
-| NL2SQL validator | `safety/owasp_llm01_injection.toml` |
+| NL2SQL | `safety/owasp_llm01_injection.toml` |
 
 ---
 
@@ -174,44 +303,35 @@ AUTODISCOVER ~/my-project
 Compare any number of models on the same suite in one command:
 
 ```bash
-crucible run --models llama3:latest,qwen2.5-coder:7b,mistral:7b \
-  --judge llama3:latest
+crucible run \
+  --models llama3.1:8b,openai:gpt-4o-mini,groq:llama-3.1-70b-versatile \
+  --suite safety/owasp_llm01_injection.toml \
+  --judge groq:llama-3.1-8b-instant
 ```
 
 ```
 ════════════════════════════════════════════════════════════════════
                      🏆  FINAL LEADERBOARD  🏆
 ════════════════════════════════════════════════════════════════════
-  RANK  MODEL                             SCORE   PASS/TOTAL
+  RANK  MODEL                              SCORE   PASS/TOTAL
 ────────────────────────────────────────────────────────────────────
-🥇 #1  mistral:7b                        0.954      5/5
-🥈 #2  llama3:latest                     0.640      2/5
-🥉 #3  qwen2.5-coder:7b                  0.450      1/5
+🥇 #1  groq:llama-3.1-70b-versatile       0.954      5/5
+🥈 #2  openai:gpt-4o-mini                 0.840      4/5
+🥉 #3  llama3.1:8b                        0.640      2/5
 ────────────────────────────────────────────────────────────────────
-
-  Best model: mistral:7b (score 0.954, 5/5 passed)
-  ⚠ Score spread of 50.4% — models differ significantly on this suite.
-```
-
-Works with all standard flags — `--suite`, `--judge`, `--n-runs`, `--filter`:
-
-```bash
-# Safety audit across three models, 3 runs each
-crucible run --suite safety/owasp_llm01_injection.toml \
-  --models llama3:latest,qwen2.5-coder:7b \
-  --n-runs 3 --judge llama3:latest
 ```
 
 ---
 
 ## Built-in Suites
 
-All suites are embedded in the binary — no file paths to memorise. Use short names:
+All suites are embedded in the binary — no file paths to memorise:
 
 ```bash
-crucible run --suite rag/faithfulness.toml --model llama3:latest --judge llama3:latest
-crucible run --suite safety/owasp_llm01_injection.toml --model llama3:latest --judge llama3:latest
-crucible run --dir benchmark --model llama3:latest --judge llama3:latest
+crucible run --suite rag/faithfulness.toml
+crucible run --suite safety/owasp_llm01_injection.toml
+crucible run --dir benchmark
+crucible run --dir safety    # all 10 OWASP categories
 ```
 
 ### General
@@ -228,52 +348,106 @@ crucible run --dir benchmark --model llama3:latest --judge llama3:latest
 |---|---|---|
 | Math reasoning | `benchmark/math.toml` | Arithmetic, multi-step reasoning |
 | Classification | `benchmark/classify.toml` | Sentiment classification |
-| Question answering | `benchmark/qa.toml` | Factual QA |
-| Structured extraction | `benchmark/extraction.toml` | JSON extraction from text |
 
 ### OWASP LLM Top 10 — Full Coverage
 
 54 probes across all 10 risk categories:
 
 ```bash
-# Single risk category
-crucible run --suite safety/owasp_llm01_injection.toml --model llama3:latest --judge llama3:latest
-
-# Entire OWASP Top 10
-crucible run --dir safety --model llama3:latest --judge llama3:latest
+crucible run --dir safety --model openai:gpt-4o --judge groq:llama-3.1-8b-instant
 ```
 
 | # | Risk | Probes |
 |---|---|---|
-| LLM01 | Prompt Injection | Direct injection, role hijack, indirect via context, delimiter confusion, system prompt exfiltration |
-| LLM02 | Sensitive Information Disclosure | PII leakage, credential exposure, training data probing, cross-user isolation |
-| LLM03 | Supply Chain | Malicious plugin output, third-party authority spoof, poisoned knowledge base |
-| LLM04 | Data & Model Poisoning | Fact overwrite via context, authority injection, backdoor triggers, bias injection |
-| LLM05 | Improper Output Handling | SQL injection in generated queries, XSS, shell injection, path traversal |
-| LLM06 | Excessive Agency | Destructive actions without confirmation, bulk operations, financial transfers |
-| LLM07 | System Prompt Leakage | Direct requests, base64/translation extraction, roleplay extraction |
-| LLM08 | Vector & Embedding Weaknesses | Adversarial chunk hijack, cross-user leakage, conflicting retrieval |
-| LLM09 | Misinformation | Hallucinated citations, fabricated statistics, medical/legal/financial advice |
-| LLM10 | Unbounded Consumption | Token amplification, recursive expansion, context stuffing, latency SLA |
+| LLM01 | Prompt Injection | Direct injection, role hijack, indirect via context, delimiter confusion |
+| LLM02 | Sensitive Information Disclosure | PII leakage, credential exposure, training data probing |
+| LLM03 | Supply Chain | Malicious plugin output, third-party authority spoof |
+| LLM04 | Data & Model Poisoning | Fact overwrite via context, authority injection, backdoor triggers |
+| LLM05 | Improper Output Handling | SQL injection in generated queries, XSS, shell injection |
+| LLM06 | Excessive Agency | Destructive actions without confirmation, bulk operations |
+| LLM07 | System Prompt Leakage | Direct requests, base64/translation extraction, roleplay |
+| LLM08 | Vector & Embedding Weaknesses | Adversarial chunk hijack, cross-user leakage |
+| LLM09 | Misinformation | Hallucinated citations, fabricated statistics |
+| LLM10 | Unbounded Consumption | Token amplification, recursive expansion, latency SLA |
+
+---
+
+## Test Suite Format (TOML)
+
+```toml
+[suite]
+name                 = "My RAG Pipeline"
+model                = "auto"      # or "openai:gpt-4o", "llama3.1:8b", etc.
+judge                = "groq:llama-3.1-8b-instant"
+concurrency          = 4
+regression_threshold = 0.05        # flag if score drops >5%
+
+[[tests]]
+name    = "grounded_answer"
+prompt  = "Based only on the context, what year was X built?"
+context = ["X was built in 1889."]
+assert = [
+  { type = "contains",  value = "1889" },
+  { type = "llm_judge", rubric = "Answer must be grounded in the context. No hallucination.", threshold = 0.85, weight = 3.0 },
+  { type = "latency_under", ms = 5000 },
+]
+```
+
+### Assertion types
+
+| Type | Description |
+|---|---|
+| `contains` | Output must include this substring |
+| `not_contains` | Output must NOT include this substring |
+| `regex` | Output must match this pattern |
+| `exact_match` | Output must equal this string exactly |
+| `json_schema` | Output must be valid JSON matching this schema |
+| `json_field` | A specific JSON field equals / contains a value |
+| `semantic` | Cosine similarity ≥ threshold (via Ollama embeddings) |
+| `llm_judge` | LLM grades output against a rubric (0.0–1.0) |
+| `refusal_check` | Output must look like a refusal |
+| `tool_not_called` | Named tool must not appear in output |
+| `latency_under` | End-to-end response ≤ N ms |
+| `ttft_under` | First token ≤ N ms |
+| `snapshot` | Output matches a golden file (`--update-snapshots` to refresh) |
+| `http_status` | HTTP response code equals N |
+
+Every assertion takes an optional `weight` field (default `1.0`). Test score = weighted average across all assertions.
+
+---
+
+## Regression Workflow
+
+```bash
+# Pin today's results as the baseline
+crucible run --baseline
+
+# After changing model, prompt, or RAG config
+crucible run --compare
+
+# Explicitly compare two run IDs
+crucible compare a1b2c3d4 e5f6g7h8
+
+# View history
+crucible report --last 20
+```
 
 ---
 
 ## TTFT (Time To First Token)
 
-Every Ollama call uses streaming internally — Crucible timestamps the first token automatically. No configuration needed.
+Crucible streams every response and timestamps the first token automatically — no configuration needed.
 
 ```
-TEST                SCORE   STATUS    LATENCY   TTFT    DELTA
-basic_factual       1.000   ✅ PASS    312ms     48ms    +0.00
-json_output         1.000   ✅ PASS    289ms     61ms    +0.00
+TEST            SCORE   STATUS   LATENCY   TTFT
+basic_factual   1.000   ✅ PASS   312ms     48ms
+json_output     1.000   ✅ PASS   289ms     61ms
 ```
-
-Assert on TTFT directly in any suite:
 
 ```toml
-[[tests.assert]]
-type = "ttft_under"
-ms   = 300   # first token must arrive within 300ms
+assert = [
+  { type = "ttft_under", ms = 300 },
+]
 ```
 
 ---
@@ -286,7 +460,6 @@ crucible detect --model mixtral:8x7b
 MODEL METADATA
 ──────────────────────────────────────────────────────────────
 Architecture      mixtral
-Attention type    GQA (Grouped Query Attention)
 MoE               YES — 8 total experts / 2 active per token (75.0% sparse)
 Context length    32768 tokens
 Parameters        46.7B
@@ -301,92 +474,24 @@ KV CACHE
 
 ---
 
-## Test Suite Format (TOML)
-
-```toml
-[suite]
-name                 = "My RAG Pipeline"
-model                = ""          # override with --model flag
-judge                = ""          # override with --judge flag
-concurrency          = 4
-regression_threshold = 0.05        # flag if score drops >5%
-
-[[tests]]
-name    = "grounded_answer"
-prompt  = "Based only on the context, what year was X built?"
-context = ["X was built in 1889."]
-
-  [[tests.assert]]
-  type  = "contains"
-  value = "1889"
-
-  [[tests.assert]]
-  type      = "llm_judge"
-  rubric    = "Answer must be grounded in the context. No hallucination."
-  threshold = 0.85
-```
-
-### Assertion types
-
-| Type | Description |
-|---|---|
-| `contains` | Output must include this substring |
-| `not_contains` | Output must NOT include this substring |
-| `regex` | Output must match this pattern (supports `(?i)` for case-insensitive) |
-| `exact_match` | Output must equal this string exactly |
-| `json_schema` | Output must be valid JSON matching this schema |
-| `semantic` | Cosine similarity ≥ threshold (via Ollama embeddings) |
-| `llm_judge` | LLM grades output against a rubric (0.0–1.0) |
-| `refusal_check` | Output must look like a refusal (safety tests) |
-| `latency_under` | End-to-end response time must be ≤ N ms |
-| `ttft_under` | First token must arrive within N ms (Ollama only) |
-
----
-
-## Regression Workflow
+## JSON & SARIF Output
 
 ```bash
-# Pin today's results as the baseline
-crucible run --model llama3:latest --judge llama3:latest --baseline
+# CI integration
+crucible run --output json | jq '.tests[] | select(.passed == false)'
 
-# After changing your model or prompt, compare automatically
-crucible run --model llama3:latest --judge llama3:latest --compare
-
-# Explicitly compare two run IDs
-crucible compare a1b2c3d4 e5f6g7h8
-
-# View full history
-crucible report
-```
-
----
-
-## JSON Output
-
-Pipe to `jq` for scripting and CI integration:
-
-```bash
-# All results
-crucible run --model llama3:latest --output json | jq '.tests[] | {test: .name, output: .output, score: .score}'
-
-# Only failures
-crucible run --model llama3:latest --output json | jq '.tests[] | select(.passed == false)'
-```
-
-SARIF output for GitHub Code Scanning:
-
-```bash
-crucible run --model llama3:latest --output sarif > results.sarif
+# GitHub Code Scanning
+crucible run --output sarif > results.sarif
 ```
 
 ---
 
 ## Roadmap
 
-- **v0.1** (now) — Core eval runner, mechanism detection, SQLite regression, full OWASP LLM Top 10, model leaderboard, TTFT, autodiscovery, self-update
+- **v0.1** — Core eval runner, mechanism detection, SQLite regression, full OWASP LLM Top 10, model leaderboard, TTFT, autodiscovery, strategy-aware RAG, multi-provider (Ollama / OpenAI / Anthropic / Groq / Mistral / Together / OpenRouter), auto-detect from env, dataset eval (JSONL/CSV/MMLU), self-update
 - **v0.2** — RAG IR metrics (Recall@k, MRR), long-context needle tests
 - **v0.3** — Agent multi-turn loop eval, LlamaGuard integration, cost tracking ($/run)
-- **v0.4** — MMLU/HumanEval benchmark runners, statistical significance, JUnit XML output
+- **v0.4** — Statistical significance, JUnit XML output, parallel provider comparison
 
 ---
 

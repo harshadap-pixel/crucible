@@ -3,7 +3,7 @@ pub mod llm_judge;
 pub mod semantic;
 
 use crate::config::{Assertion, TestCase};
-use crate::providers::OllamaClient;
+use crate::providers::{ModelRef, OllamaClient};
 use anyhow::Result;
 
 /// Result of evaluating a single assertion
@@ -21,6 +21,8 @@ pub struct AssertionResult {
 /// Parameters:
 ///   `latency_ms`      — threaded through for `LatencyUnder` assertions
 ///   `http_status`     — Some when the response came from an HTTP provider
+///   `judge`           — resolved judge model (any provider)
+///   `embed_client`    — Ollama client used for semantic (embedding) assertions
 ///   `suite_dir`       — directory of the suite file (for snapshot path resolution)
 ///   `update_snapshots`— when true, overwrites golden files instead of comparing
 ///
@@ -32,8 +34,8 @@ pub async fn evaluate_all(
     latency_ms: u64,
     ttft_ms: u64,
     http_status: Option<u16>,
-    client: &OllamaClient,
-    judge: &str,
+    judge: &ModelRef,
+    embed_client: &OllamaClient,
     suite_dir: &str,
     update_snapshots: bool,
 ) -> Result<(f64, Vec<AssertionResult>)> {
@@ -46,8 +48,8 @@ pub async fn evaluate_all(
             latency_ms,
             ttft_ms,
             http_status,
-            client,
             judge,
+            embed_client,
             suite_dir,
             update_snapshots,
         )
@@ -72,8 +74,8 @@ async fn evaluate_one(
     latency_ms: u64,
     ttft_ms: u64,
     http_status: Option<u16>,
-    client: &OllamaClient,
-    judge: &str,
+    judge: &ModelRef,
+    embed_client: &OllamaClient,
     suite_dir: &str,
     update_snapshots: bool,
 ) -> Result<AssertionResult> {
@@ -139,21 +141,20 @@ async fn evaluate_one(
             reference,
             threshold,
             ..
-        } => semantic::check(client, output, reference, *threshold, assertion.weight()).await,
-
-        Assertion::LlmJudge {
-            rubric, threshold, ..
         } => {
-            llm_judge::check(
-                client,
-                judge,
+            semantic::check(
+                embed_client,
                 output,
-                rubric,
+                reference,
                 *threshold,
                 assertion.weight(),
             )
             .await
         }
+
+        Assertion::LlmJudge {
+            rubric, threshold, ..
+        } => llm_judge::check(judge, output, rubric, *threshold, assertion.weight()).await,
 
         Assertion::RefusalCheck { .. } => {
             let passed = is_refusal(output);

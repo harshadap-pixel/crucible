@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::assertions;
 use crate::cli::RunArgs;
 use crate::config::{self, HttpConfig, ScriptConfig, TestCase};
-use crate::providers::{script as script_provider, OllamaClient};
+use crate::providers::{self, script as script_provider, ModelRef, OllamaClient};
 use crate::report;
 use crate::store::{
     db::{RunRecord, TestRecord},
@@ -70,10 +70,12 @@ pub async fn run(args: RunArgs) -> Result<()> {
         return crate::leaderboard::run(args, suite_paths, cli_vars).await;
     }
 
-    let client = Arc::new(OllamaClient::new(&args.ollama_url));
+    // Always create an Ollama client — used for embeddings (semantic assertions)
+    // and health/show calls regardless of which provider handles completions.
+    let embed_client = Arc::new(OllamaClient::new(&args.ollama_url));
 
     for path in &suite_paths {
-        let stopped = run_suite(path, &args, &cli_vars, &client).await?;
+        let stopped = run_suite(path, &args, &cli_vars, &embed_client).await?;
         if args.fail_fast && stopped {
             break;
         }
@@ -144,11 +146,11 @@ async fn run_dataset(
     suite.tests = test_cases;
     let suite_path_for_run = format!("__dataset__{dataset_path}");
 
-    let client = Arc::new(OllamaClient::new(&args.ollama_url));
+    let embed_client = Arc::new(OllamaClient::new(&args.ollama_url));
 
     // Write suite to a temp file so execute_suite can load it
     // Instead: directly call execute_suite_from_config
-    let outcome = execute_suite_from_config(suite, args, cli_vars, &client).await?;
+    let outcome = execute_suite_from_config(suite, args, cli_vars, &embed_client).await?;
 
     // Print per-row results table (compact)
     print_dataset_rows(&outcome.results);
@@ -294,7 +296,7 @@ pub async fn execute_suite(
     model_override: Option<&str>,
     args: &RunArgs,
     cli_vars: &HashMap<String, String>,
-    client: &Arc<OllamaClient>,
+    embed_client: &Arc<OllamaClient>,
 ) -> Result<SuiteOutcome> {
     let mut suite = config::load(suite_path)?;
     if let Some(m) = model_override {
@@ -304,6 +306,28 @@ pub async fn execute_suite(
     }
     if let Some(ref j) = args.judge {
         suite.suite.judge = j.clone();
+    }
+
+    // Auto-detect model when not specified in suite or CLI
+    if suite.suite.model.is_empty() || suite.suite.model == "auto" {
+        let detected = providers::detect_available(&args.ollama_url).await;
+        match providers::auto_select_model(&detected) {
+            Some(m) => {
+                println!(
+                    "  {} Auto-selected model: {}",
+                    "→".green(),
+                    m.yellow().bold()
+                );
+                suite.suite.model = m;
+            }
+            None => {
+                anyhow::bail!(
+                    "No model specified and none auto-detected.\n\
+                     Start Ollama (ollama serve) or set an API key env var.\n\
+                     Run `crucible models` to see what's available."
+                );
+            }
+        }
     }
 
     let suite_dir = std::path::Path::new(suite_path)
@@ -332,18 +356,32 @@ pub async fn execute_suite(
         }
     }
 
-    let ollama_url = args.ollama_url.clone();
-    let is_ollama =
-        suite.suite.script.is_none() && suite.suite.http.is_none() && suite.suite.model != "mock";
+    // Coerce judge: if using the default Ollama judge but the eval model is a
+    // cloud provider, mirror the eval provider with a cheap model instead so
+    // the run succeeds without a local Ollama instance.
+    suite.suite.judge = providers::coerce_judge(&suite.suite.judge, &suite.suite.model);
 
-    if is_ollama && !client.health().await {
+    // Resolve eval + judge providers from their model spec strings.
+    let eval_ref = Arc::new(ModelRef::resolve(&suite.suite.model, &args.ollama_url)?);
+    let judge_ref = Arc::new(ModelRef::resolve(&suite.suite.judge, &args.ollama_url)?);
+
+    let ollama_url = args.ollama_url.clone();
+    let is_ollama = eval_ref.provider.name() == "ollama"
+        && suite.suite.script.is_none()
+        && suite.suite.http.is_none()
+        && suite.suite.model != "mock";
+
+    if is_ollama && !embed_client.health().await {
         anyhow::bail!("Ollama not reachable at {ollama_url}. Is it running?");
     }
 
     let suite_n_runs = if !is_ollama {
         args.n_runs.max(suite.suite.n_runs)
     } else {
-        let info = client.show(&suite.suite.model).await.unwrap_or_default();
+        let info = embed_client
+            .show(&suite.suite.model)
+            .await
+            .unwrap_or_default();
         let meta = crate::detect::model_meta::ModelMetadata::from_ollama(&info);
         let mult = meta.n_runs_multiplier();
         let base = args.n_runs.max(suite.suite.n_runs);
@@ -387,8 +425,7 @@ pub async fn execute_suite(
 
     let http_cfg = suite.suite.http.clone();
     let sem = Arc::new(Semaphore::new(args.concurrency));
-    let model = Arc::new(suite.suite.model.clone());
-    let judge = Arc::new(suite.suite.judge.clone());
+    let model_name = Arc::new(suite.suite.model.clone());
     let script_arc = Arc::new(suite.suite.script.clone());
     let http_arc = Arc::new(http_cfg);
     let cli_vars_arc = Arc::new(cli_vars.clone());
@@ -399,9 +436,9 @@ pub async fn execute_suite(
     let mut handles = Vec::new();
 
     for test in suite.tests.clone() {
-        let client = client.clone();
-        let model = model.clone();
-        let judge = judge.clone();
+        let eval_ref = eval_ref.clone();
+        let judge_ref = judge_ref.clone();
+        let embed_client = embed_client.clone();
         let script_arc = script_arc.clone();
         let http_arc = http_arc.clone();
         let sem = sem.clone();
@@ -413,9 +450,9 @@ pub async fn execute_suite(
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             let result = run_test_with_retry(
-                &client,
-                &model,
-                &judge,
+                &eval_ref,
+                &judge_ref,
+                &embed_client,
                 &test,
                 effective_n,
                 &script_arc,
@@ -462,7 +499,7 @@ pub async fn execute_suite(
         .sum();
 
     Ok(SuiteOutcome {
-        model: (*model).clone(),
+        model: (*model_name).clone(),
         suite_name: suite.suite.name,
         regression_threshold: suite.suite.regression_threshold,
         results,
@@ -477,18 +514,49 @@ pub async fn execute_suite(
 /// Like `execute_suite` but takes an already-loaded `config::Suite` — used by
 /// dataset mode which builds the suite dynamically from expanded test cases.
 pub async fn execute_suite_from_config(
-    suite: config::Suite,
+    mut suite: config::Suite,
     args: &RunArgs,
     cli_vars: &HashMap<String, String>,
-    client: &Arc<OllamaClient>,
+    embed_client: &Arc<OllamaClient>,
 ) -> Result<SuiteOutcome> {
     // Write to a temp TOML file so execute_suite can load it, OR inline execution.
     // We inline-execute to avoid a file round-trip: replicate the inner loop.
     let ollama_url = args.ollama_url.clone();
-    let is_ollama =
-        suite.suite.script.is_none() && suite.suite.http.is_none() && suite.suite.model != "mock";
 
-    if is_ollama && !client.health().await {
+    // Auto-detect model when not specified
+    if suite.suite.model.is_empty() || suite.suite.model == "auto" {
+        let detected = providers::detect_available(&ollama_url).await;
+        match providers::auto_select_model(&detected) {
+            Some(m) => {
+                println!(
+                    "  {} Auto-selected model: {}",
+                    "→".green(),
+                    m.yellow().bold()
+                );
+                suite.suite.model = m;
+            }
+            None => {
+                anyhow::bail!(
+                    "No model specified and none auto-detected.\n\
+                     Start Ollama (ollama serve) or set an API key env var.\n\
+                     Run `crucible models` to see what's available."
+                );
+            }
+        }
+    }
+
+    // Coerce judge: mirror eval provider if still using default Ollama judge.
+    suite.suite.judge = providers::coerce_judge(&suite.suite.judge, &suite.suite.model);
+
+    let eval_ref = Arc::new(ModelRef::resolve(&suite.suite.model, &args.ollama_url)?);
+    let judge_ref = Arc::new(ModelRef::resolve(&suite.suite.judge, &args.ollama_url)?);
+
+    let is_ollama = eval_ref.provider.name() == "ollama"
+        && suite.suite.script.is_none()
+        && suite.suite.http.is_none()
+        && suite.suite.model != "mock";
+
+    if is_ollama && !embed_client.health().await {
         anyhow::bail!("Ollama not reachable at {ollama_url}. Is it running?");
     }
 
@@ -507,8 +575,7 @@ pub async fn execute_suite_from_config(
 
     let http_cfg = suite.suite.http.clone();
     let sem = Arc::new(Semaphore::new(args.concurrency));
-    let model = Arc::new(suite.suite.model.clone());
-    let judge = Arc::new(suite.suite.judge.clone());
+    let model_name = Arc::new(suite.suite.model.clone());
     let script_arc = Arc::new(suite.suite.script.clone());
     let http_arc = Arc::new(http_cfg);
     let cli_vars_arc = Arc::new(cli_vars.clone());
@@ -516,9 +583,9 @@ pub async fn execute_suite_from_config(
 
     let mut handles = Vec::new();
     for test in suite.tests {
-        let client = client.clone();
-        let model = model.clone();
-        let judge = judge.clone();
+        let eval_ref = eval_ref.clone();
+        let judge_ref = judge_ref.clone();
+        let embed_client = embed_client.clone();
         let script_arc = script_arc.clone();
         let http_arc = http_arc.clone();
         let sem = sem.clone();
@@ -529,9 +596,9 @@ pub async fn execute_suite_from_config(
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             let result = run_test_with_retry(
-                &client,
-                &model,
-                &judge,
+                &eval_ref,
+                &judge_ref,
+                &embed_client,
                 &test,
                 suite_n_runs,
                 &script_arc,
@@ -577,7 +644,7 @@ pub async fn execute_suite_from_config(
         .sum();
 
     Ok(SuiteOutcome {
-        model: (*model).clone(),
+        model: (*model_name).clone(),
         suite_name: suite.suite.name,
         regression_threshold: suite.suite.regression_threshold,
         results,
@@ -595,14 +662,14 @@ async fn run_suite(
     suite_path: &str,
     args: &RunArgs,
     cli_vars: &HashMap<String, String>,
-    client: &Arc<OllamaClient>,
+    embed_client: &Arc<OllamaClient>,
 ) -> Result<bool> {
     // Bug #4: reject n-runs=0 early
     if args.n_runs == 0 {
         anyhow::bail!("--n-runs must be at least 1");
     }
 
-    let outcome = execute_suite(suite_path, None, args, cli_vars, client).await?;
+    let outcome = execute_suite(suite_path, None, args, cli_vars, embed_client).await?;
 
     // Bug #3: if --filter matched nothing, skip DB write and exit cleanly
     if outcome.results.is_empty() {
@@ -689,20 +756,17 @@ async fn run_suite(
                 outcome.regression_threshold,
             );
             if outcome.total_tokens > 0 {
-                println!(
+                let in_tok: u64 = outcome.results.iter().map(|r| r.input_tokens as u64).sum();
+                let out_tok: u64 = outcome.results.iter().map(|r| r.output_tokens as u64).sum();
+                print!(
                     "  Tokens: {} in / {} out (total {})",
-                    outcome
-                        .results
-                        .iter()
-                        .map(|r| r.input_tokens as u64)
-                        .sum::<u64>(),
-                    outcome
-                        .results
-                        .iter()
-                        .map(|r| r.output_tokens as u64)
-                        .sum::<u64>(),
-                    outcome.total_tokens,
+                    in_tok, out_tok, outcome.total_tokens,
                 );
+                if let Some((inp_rate, out_rate)) = model_cost_per_1m(&outcome.model) {
+                    let cost = (in_tok as f64 * inp_rate + out_tok as f64 * out_rate) / 1_000_000.0;
+                    print!("  — est. cost ${cost:.6}");
+                }
+                println!();
             }
             println!("  Run ID: {}", run_id.dimmed());
             if !args.baseline {
@@ -847,9 +911,9 @@ pub fn parse_vars(raw: &[String]) -> Result<HashMap<String, String>> {
 
 #[allow(clippy::too_many_arguments)]
 async fn run_test_with_retry(
-    client: &OllamaClient,
-    model: &str,
-    judge: &str,
+    eval_ref: &ModelRef,
+    judge_ref: &ModelRef,
+    embed_client: &OllamaClient,
     test: &TestCase,
     n_runs: u32,
     script_cfg: &Option<ScriptConfig>,
@@ -862,9 +926,9 @@ async fn run_test_with_retry(
     let mut last_err = None;
     for attempt in 0..=retry {
         match run_test(
-            client,
-            model,
-            judge,
+            eval_ref,
+            judge_ref,
+            embed_client,
             test,
             n_runs,
             script_cfg,
@@ -890,13 +954,13 @@ async fn run_test_with_retry(
 /// Provider priority:
 ///   1. HTTP  (http_cfg present + test has method + path)
 ///   2. Script (script_cfg present)
-///   3. Multi-turn Ollama (test.turns non-empty)
-///   4. Single-turn Ollama (default)
+///   3. Multi-turn model (test.turns non-empty)
+///   4. Single-turn model (default)
 #[allow(clippy::too_many_arguments)]
 async fn run_test(
-    client: &OllamaClient,
-    model: &str,
-    judge: &str,
+    eval_ref: &ModelRef,
+    judge_ref: &ModelRef,
+    embed_client: &OllamaClient,
     test: &TestCase,
     n_runs: u32,
     script_cfg: &Option<ScriptConfig>,
@@ -995,14 +1059,15 @@ async fn run_test(
                 .await??;
                 (sr.stdout, sr.latency_ms as u64, None, 0u64, 0u32, 0u32)
             } else if !test.turns.is_empty() {
-                // ── Multi-turn Ollama ──────────────────────────────────────────
+                // ── Multi-turn model ───────────────────────────────────────────
                 let history: Vec<(String, String)> = test
                     .turns
                     .iter()
                     .map(|t| (t.role.clone(), t.content.clone()))
                     .collect();
-                let comp = client
-                    .chat_with_history(model, &history, &full_prompt, 0.0)
+                let comp = eval_ref
+                    .provider
+                    .chat_with_history(&eval_ref.model, &history, &full_prompt, 0.0)
                     .await?;
                 (
                     comp.text,
@@ -1013,8 +1078,11 @@ async fn run_test(
                     comp.output_tokens,
                 )
             } else {
-                // ── Single-turn Ollama (default) ───────────────────────────────
-                let comp = client.chat(model, None, &full_prompt, 0.0).await?;
+                // ── Single-turn model (default) ────────────────────────────────
+                let comp = eval_ref
+                    .provider
+                    .chat(&eval_ref.model, test.system.as_deref(), &full_prompt, 0.0)
+                    .await?;
                 (
                     comp.text,
                     comp.latency_ms as u64,
@@ -1031,8 +1099,8 @@ async fn run_test(
             latency_ms,
             ttft_ms,
             http_status,
-            client,
-            judge,
+            judge_ref,
+            embed_client,
             suite_dir,
             update_snapshots,
         )
@@ -1107,6 +1175,46 @@ async fn accumulate_sse(resp: reqwest::Response, timeout_ms: u64) -> String {
 
     let _ = timeout(Duration::from_millis(timeout_ms), collect).await;
     lines.join("\n")
+}
+
+// ── Cost estimation ───────────────────────────────────────────────────────────
+
+/// Return `(input_$/1M_tokens, output_$/1M_tokens)` for known cloud model specs.
+/// Returns `None` for local/unknown models so cost is not displayed.
+fn model_cost_per_1m(model_spec: &str) -> Option<(f64, f64)> {
+    // (prefix-to-match, input_rate, output_rate) — all in USD per 1M tokens
+    let table: &[(&str, f64, f64)] = &[
+        // OpenAI
+        ("openai:gpt-4o-mini", 0.15, 0.60),
+        ("openai:gpt-4o", 5.00, 15.00),
+        ("openai:gpt-4-turbo", 10.00, 30.00),
+        ("openai:gpt-3.5-turbo", 0.50, 1.50),
+        // Anthropic
+        ("anthropic:claude-haiku-4-5", 0.80, 4.00),
+        ("anthropic:claude-3-5-haiku", 0.80, 4.00),
+        ("anthropic:claude-sonnet-4-6", 3.00, 15.00),
+        ("anthropic:claude-3-5-sonnet", 3.00, 15.00),
+        ("anthropic:claude-opus-4-7", 15.00, 75.00),
+        ("anthropic:claude-3-opus", 15.00, 75.00),
+        // Groq (free tier at time of writing — show $0.00 to acknowledge)
+        ("groq:llama-3.1-8b-instant", 0.05, 0.08),
+        ("groq:llama-3.1-70b-versatile", 0.59, 0.79),
+        // Mistral
+        ("mistral:mistral-small", 0.20, 0.60),
+        ("mistral:mistral-large", 2.00, 6.00),
+        // Together
+        ("together:meta-llama/Meta-Llama-3.1-8B", 0.18, 0.18),
+        ("together:meta-llama/Meta-Llama-3.1-70B", 0.88, 0.88),
+        // OpenRouter — varies; use a conservative estimate
+        ("openrouter:openai/gpt-4o-mini", 0.15, 0.60),
+        ("openrouter:openai/gpt-4o", 5.00, 15.00),
+    ];
+    for (prefix, inp, out) in table {
+        if model_spec.starts_with(prefix) {
+            return Some((*inp, *out));
+        }
+    }
+    None
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
