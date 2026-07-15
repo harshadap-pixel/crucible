@@ -351,7 +351,7 @@ crucible run --dir safety    # all 10 OWASP categories
 
 ### OWASP LLM Top 10 — Full Coverage
 
-54 probes across all 10 risk categories:
+60 probes across all 10 risk categories:
 
 ```bash
 crucible run --dir safety --model openai:gpt-4o --judge groq:llama-3.1-8b-instant
@@ -488,9 +488,9 @@ crucible run --output sarif > results.sarif
 
 ## Roadmap
 
-- **v0.1** — Core eval runner, mechanism detection, SQLite regression, full OWASP LLM Top 10, model leaderboard, TTFT, autodiscovery, strategy-aware RAG, multi-provider (Ollama / OpenAI / Anthropic / Groq / Mistral / Together / OpenRouter), auto-detect from env, dataset eval (JSONL/CSV/MMLU), self-update
+- **v0.1** — Core eval runner, mechanism detection, SQLite regression, full OWASP LLM Top 10, model leaderboard, TTFT, autodiscovery, strategy-aware RAG, multi-provider (Ollama / OpenAI / Anthropic / Groq / Mistral / Together / OpenRouter), auto-detect from env, dataset eval (JSONL/CSV/MMLU), self-update, cost tracking ($/run)
 - **v0.2** — RAG IR metrics (Recall@k, MRR), long-context needle tests
-- **v0.3** — Agent multi-turn loop eval, LlamaGuard integration, cost tracking ($/run)
+- **v0.3** — Agent multi-turn loop eval, LlamaGuard integration
 - **v0.4** — Statistical significance, JUnit XML output, parallel provider comparison
 
 ---
