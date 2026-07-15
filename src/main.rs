@@ -1,7 +1,9 @@
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Command};
-use crucible::{cli, detect, discover, models, regression, report, runner, store, update, validation};
+use crucible::{
+    cli, detect, discover, models, regression, report, runner, store, update, validation,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -1,8 +1,8 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use crate::config::{self, Assertion};
 use crate::providers::ModelRef;
@@ -95,9 +95,9 @@ pub async fn validate_judge(
                     .assert
                     .iter()
                     .filter_map(|a| match a {
-                        Assertion::LlmJudge { rubric, threshold, .. } => {
-                            Some((rubric.clone(), *threshold))
-                        }
+                        Assertion::LlmJudge {
+                            rubric, threshold, ..
+                        } => Some((rubric.clone(), *threshold)),
                         _ => None,
                     })
                     .collect();
@@ -130,7 +130,10 @@ pub async fn validate_judge(
 
                 // Run the test prompt through the rubric with each judge
                 for judge in &judge_refs {
-                    let prompt = format!("RUBRIC:\n{}\n\nRESPONSE TO EVALUATE:\nTest prompt.\n\nScore the response.", rubric);
+                    let prompt = format!(
+                        "RUBRIC:\n{}\n\nRESPONSE TO EVALUATE:\nTest prompt.\n\nScore the response.",
+                        rubric
+                    );
 
                     match judge.provider.chat(&judge.model, None, &prompt, 0.0).await {
                         Ok(result) => {
@@ -172,7 +175,11 @@ pub async fn validate_judge(
         pb.finish_with_message("✓ Evaluated");
     }
 
-    println!("  {} Total tests evaluated: {}", "✓".green(), total_test_count);
+    println!(
+        "  {} Total tests evaluated: {}",
+        "✓".green(),
+        total_test_count
+    );
     println!();
 
     // Compute metrics from judgements

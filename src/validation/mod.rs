@@ -1,9 +1,9 @@
 pub mod judge_validator;
 
-use anyhow::Result;
-use colored::Colorize;
 use crate::cli::ValidateJudgeArgs;
 use crate::embedded;
+use anyhow::Result;
+use colored::Colorize;
 pub use judge_validator::validate_judge;
 
 pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
@@ -31,7 +31,8 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
 
     // Parse judges
     let judges = args.judges.unwrap_or_else(|| {
-        "anthropic:claude-fable-5,anthropic:claude-3-5-haiku-latest,groq:llama-3.1-8b-instant".to_string()
+        "anthropic:claude-fable-5,anthropic:claude-3-5-haiku-latest,groq:llama-3.1-8b-instant"
+            .to_string()
     });
     let judge_list: Vec<String> = judges.split(',').map(|s| s.trim().to_string()).collect();
 
@@ -43,8 +44,18 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
     println!("  Total tests analyzed: {}", report.total_tests);
     println!("  Judges compared:      {}", report.judges_compared.len());
     println!("  Overall agreement:    {:.1}%", report.overall_agreement);
-    println!("  Confidence level:     {}", report.summary.confidence_level.yellow());
-    println!("  Reliable:             {}", if report.summary.is_reliable { "✓ YES".green() } else { "✗ NO".red() });
+    println!(
+        "  Confidence level:     {}",
+        report.summary.confidence_level.yellow()
+    );
+    println!(
+        "  Reliable:             {}",
+        if report.summary.is_reliable {
+            "✓ YES".green()
+        } else {
+            "✗ NO".red()
+        }
+    );
 
     if !report.per_rubric_metrics.is_empty() {
         println!("\n{} Per-Rubric Metrics", "─".repeat(68).cyan());
@@ -62,11 +73,18 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
     if args.show_divergent && !report.divergent_cases.is_empty() {
         println!("\n{} Divergent Cases", "⚠".repeat(35).yellow());
         for case in &report.divergent_cases {
-            println!("  Test: {} ({})", case.test_name.yellow(), case.rubric.dimmed());
+            println!(
+                "  Test: {} ({})",
+                case.test_name.yellow(),
+                case.rubric.dimmed()
+            );
             for (judge, score) in &case.judge_scores {
                 println!("    {}: {:.2}", judge, score);
             }
-            println!("    Divergence: {:.2}", format!("{:.2}", case.max_disagreement).red());
+            println!(
+                "    Divergence: {:.2}",
+                format!("{:.2}", case.max_disagreement).red()
+            );
         }
     }
 
