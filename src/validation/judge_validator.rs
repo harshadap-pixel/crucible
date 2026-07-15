@@ -81,7 +81,7 @@ pub async fn validate_judge(
 
     // Process each suite
     for suite_path in &suite_paths {
-        let suite_content = std::fs::read_to_string(&suite_path)?;
+        let suite_content = std::fs::read_to_string(suite_path)?;
         let suite: config::Suite = toml::from_str(&suite_content)?;
 
         println!("  {} {}", "▸".cyan(), suite_path.yellow());
@@ -231,7 +231,7 @@ fn compute_metrics(
 
         per_rubric_data
             .entry(judgement.rubric.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(scores.clone());
 
         // Detect divergence
