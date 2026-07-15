@@ -40,6 +40,9 @@ pub enum Command {
 
     /// Update crucible to the latest release
     Update,
+
+    /// Validate judge performance across multiple models
+    ValidateJudge(ValidateJudgeArgs),
 }
 
 // ── models ────────────────────────────────────────────────────────────────────
@@ -238,4 +241,26 @@ pub struct ReportArgs {
     /// Filter by suite name
     #[arg(short, long)]
     pub suite: Option<String>,
+}
+
+// ── validate-judge ───────────────────────────────────────────────────────────
+
+#[derive(Args, Debug)]
+pub struct ValidateJudgeArgs {
+    /// Suite file to validate (default: all safety suites)
+    #[arg(short, long, default_value = "safety")]
+    pub suite: String,
+
+    /// Judge models to compare (comma-separated)
+    /// Defaults: anthropic:claude-fable-5,anthropic:claude-3-5-haiku-latest,groq:llama-3.1-8b-instant
+    #[arg(long)]
+    pub judges: Option<String>,
+
+    /// Show divergent cases in detail
+    #[arg(long, default_value_t = false)]
+    pub show_divergent: bool,
+
+    /// Ollama base URL to probe for local models
+    #[arg(long, default_value = "http://localhost:11434", env = "OLLAMA_HOST")]
+    pub ollama_url: String,
 }
