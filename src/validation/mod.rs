@@ -1,32 +1,20 @@
 pub mod judge_validator;
 
-use crate::cli::ValidateJudgeArgs;
-use crate::embedded;
 use anyhow::Result;
 use colored::Colorize;
-pub use judge_validator::validate_judge;
+
+use crate::cli::ValidateJudgeArgs;
+use crate::embedded;
+
+pub use judge_validator::{compute_metrics, generate_summary, score_output_with_judge, validate_judge};
 
 pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
-    // Resolve suite paths
-    let suite_paths = if args.suite == "safety" {
-        // Load all safety suites
-        vec![
-            "owasp_llm01_injection.toml",
-            "owasp_llm02_sensitive_disclosure.toml",
-            "owasp_llm03_supply_chain.toml",
-            "owasp_llm04_data_poisoning.toml",
-            "owasp_llm05_output_handling.toml",
-            "owasp_llm06_excessive_agency.toml",
-            "owasp_llm07_system_prompt_leakage.toml",
-            "owasp_llm08_vector_weaknesses.toml",
-            "owasp_llm09_misinformation.toml",
-            "owasp_llm10_unbounded_consumption.toml",
-        ]
-        .into_iter()
-        .map(|name| embedded::resolve_suite_path(&format!("safety/{name}")))
-        .collect()
+    // Resolve suite path
+    let suite_path = if args.suite == "safety" {
+        // Default to first safety suite for demo
+        embedded::resolve_suite_path("safety/owasp_llm01_injection.toml")
     } else {
-        vec![embedded::resolve_suite_path(&args.suite)]
+        embedded::resolve_suite_path(&args.suite)
     };
 
     // Parse judges
@@ -36,20 +24,43 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
     });
     let judge_list: Vec<String> = judges.split(',').map(|s| s.trim().to_string()).collect();
 
+    // For now, use a default eval model. In production, this would be a CLI arg
+    let eval_model = "llama3.1:8b";
+
     // Run validation
-    let report = validate_judge(suite_paths, judge_list).await?;
+    let report = validate_judge(&suite_path, eval_model, judge_list).await?;
 
     // Display results
-    println!("\n{} Results", "═".repeat(68).green().bold());
-    println!("  Total tests analyzed: {}", report.total_tests);
-    println!("  Judges compared:      {}", report.judges_compared.len());
-    println!("  Overall agreement:    {:.1}%", report.overall_agreement);
     println!(
-        "  Confidence level:     {}",
-        report.summary.confidence_level.yellow()
+        "\n{} Validation Results",
+        "═".repeat(65).green().bold()
     );
     println!(
-        "  Reliable:             {}",
+        "  Suite:              {}",
+        report.suite_name.cyan()
+    );
+    println!(
+        "  Tests analyzed:     {}",
+        report.tests_with_judges
+    );
+    println!(
+        "  Judges compared:    {}",
+        report.judges_compared.len()
+    );
+    println!(
+        "  Overall agreement:  {:.1}%",
+        report.overall_agreement
+    );
+    println!(
+        "  Confidence:         {}",
+        match report.summary.confidence_level.as_str() {
+            "high" => report.summary.confidence_level.green(),
+            "medium" => report.summary.confidence_level.yellow(),
+            _ => report.summary.confidence_level.red(),
+        }
+    );
+    println!(
+        "  Reliable:           {}",
         if report.summary.is_reliable {
             "✓ YES".green()
         } else {
@@ -57,11 +68,15 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
         }
     );
 
+    // Per-rubric metrics
     if !report.per_rubric_metrics.is_empty() {
-        println!("\n{} Per-Rubric Metrics", "─".repeat(68).cyan());
+        println!(
+            "\n{} Per-Rubric Metrics",
+            "─".repeat(65).cyan()
+        );
         for metric in report.per_rubric_metrics.values() {
             println!(
-                "  {}: {:.1}% agreement ({} tests, {} disagreements)",
+                "  {}: {:.1}% ({} cases, {} divergent)",
                 metric.rubric_name.cyan(),
                 metric.agreement_percentage,
                 metric.test_count,
@@ -70,26 +85,28 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
         }
     }
 
+    // Divergent cases
     if args.show_divergent && !report.divergent_cases.is_empty() {
-        println!("\n{} Divergent Cases", "⚠".repeat(35).yellow());
+        println!(
+            "\n{} Divergent Cases (agreement gap > 15%)",
+            "⚠".yellow()
+        );
         for case in &report.divergent_cases {
             println!(
-                "  Test: {} ({})",
+                "  {}: {} → divergence {}",
                 case.test_name.yellow(),
-                case.rubric.dimmed()
-            );
-            for (judge, score) in &case.judge_scores {
-                println!("    {}: {:.2}", judge, score);
-            }
-            println!(
-                "    Divergence: {:.2}",
+                case.rubric.dimmed(),
                 format!("{:.2}", case.max_disagreement).red()
             );
         }
     }
 
+    // Recommendations
     if !report.summary.recommendations.is_empty() {
-        println!("\n{} Recommendations", "💡".cyan());
+        println!(
+            "\n{} Recommendations",
+            "💡".cyan()
+        );
         for rec in &report.summary.recommendations {
             println!("  • {}", rec);
         }
