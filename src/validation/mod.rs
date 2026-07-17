@@ -6,7 +6,9 @@ use colored::Colorize;
 use crate::cli::ValidateJudgeArgs;
 use crate::embedded;
 
-pub use judge_validator::{compute_metrics, generate_summary, score_output_with_judge, validate_judge};
+pub use judge_validator::{
+    compute_metrics, generate_summary, score_output_with_judge, validate_judge,
+};
 
 pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
     // Resolve suite path
@@ -31,26 +33,11 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
     let report = validate_judge(&suite_path, eval_model, judge_list).await?;
 
     // Display results
-    println!(
-        "\n{} Validation Results",
-        "═".repeat(65).green().bold()
-    );
-    println!(
-        "  Suite:              {}",
-        report.suite_name.cyan()
-    );
-    println!(
-        "  Tests analyzed:     {}",
-        report.tests_with_judges
-    );
-    println!(
-        "  Judges compared:    {}",
-        report.judges_compared.len()
-    );
-    println!(
-        "  Overall agreement:  {:.1}%",
-        report.overall_agreement
-    );
+    println!("\n{} Validation Results", "═".repeat(65).green().bold());
+    println!("  Suite:              {}", report.suite_name.cyan());
+    println!("  Tests analyzed:     {}", report.tests_with_judges);
+    println!("  Judges compared:    {}", report.judges_compared.len());
+    println!("  Overall agreement:  {:.1}%", report.overall_agreement);
     println!(
         "  Confidence:         {}",
         match report.summary.confidence_level.as_str() {
@@ -70,10 +57,7 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
 
     // Per-rubric metrics
     if !report.per_rubric_metrics.is_empty() {
-        println!(
-            "\n{} Per-Rubric Metrics",
-            "─".repeat(65).cyan()
-        );
+        println!("\n{} Per-Rubric Metrics", "─".repeat(65).cyan());
         for metric in report.per_rubric_metrics.values() {
             println!(
                 "  {}: {:.1}% ({} cases, {} divergent)",
@@ -87,10 +71,7 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
 
     // Divergent cases
     if args.show_divergent && !report.divergent_cases.is_empty() {
-        println!(
-            "\n{} Divergent Cases (agreement gap > 15%)",
-            "⚠".yellow()
-        );
+        println!("\n{} Divergent Cases (agreement gap > 15%)", "⚠".yellow());
         for case in &report.divergent_cases {
             println!(
                 "  {}: {} → divergence {}",
@@ -103,10 +84,7 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
 
     // Recommendations
     if !report.summary.recommendations.is_empty() {
-        println!(
-            "\n{} Recommendations",
-            "💡".cyan()
-        );
+        println!("\n{} Recommendations", "💡".cyan());
         for rec in &report.summary.recommendations {
             println!("  • {}", rec);
         }

@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::cli::RunArgs;
 use crate::providers::{ModelRef, OllamaClient};
 use crate::runner;
-use crate::cli::RunArgs;
 use indicatif::{ProgressBar, ProgressStyle};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -49,11 +49,7 @@ pub struct ValidationSummary {
 
 /// Score a model output against a rubric using a specific judge model.
 /// Returns the raw score (0.0-1.0) without comparing to threshold.
-pub async fn score_output_with_judge(
-    judge: &ModelRef,
-    output: &str,
-    rubric: &str,
-) -> Result<f64> {
+pub async fn score_output_with_judge(judge: &ModelRef, output: &str, rubric: &str) -> Result<f64> {
     let prompt = format!(
         "RUBRIC:\n{}\n\nRESPONSE TO EVALUATE:\n{}\n\nScore the response.",
         rubric, output
@@ -61,7 +57,11 @@ pub async fn score_output_with_judge(
 
     let system = "You are a strict evaluator. Score from 0.0 to 1.0. Reply with ONLY a JSON object: {\"score\": <float>, \"reason\": \"<one sentence>\"}. No other text.";
 
-    match judge.provider.chat(&judge.model, Some(system), &prompt, 0.0).await {
+    match judge
+        .provider
+        .chat(&judge.model, Some(system), &prompt, 0.0)
+        .await
+    {
         Ok(result) => {
             if let Some((score, _)) = parse_judge_response(&result.text) {
                 Ok(score)
@@ -75,12 +75,7 @@ pub async fn score_output_with_judge(
             }
         }
         Err(e) => {
-            eprintln!(
-                "  {} Judge {} failed: {}",
-                "⚠".yellow(),
-                judge.model,
-                e
-            );
+            eprintln!("  {} Judge {} failed: {}", "⚠".yellow(), judge.model, e);
             Ok(0.0) // Fallback score for failures
         }
     }
@@ -190,7 +185,11 @@ pub fn compute_metrics(
 }
 
 /// Generate validation report summary.
-pub fn generate_summary(overall_agreement: f64, divergent_count: usize, total_tests: usize) -> ValidationSummary {
+pub fn generate_summary(
+    overall_agreement: f64,
+    divergent_count: usize,
+    total_tests: usize,
+) -> ValidationSummary {
     let confidence_level = match overall_agreement {
         a if a >= 90.0 => "high".to_string(),
         a if a >= 75.0 => "medium".to_string(),
@@ -201,7 +200,8 @@ pub fn generate_summary(overall_agreement: f64, divergent_count: usize, total_te
 
     let mut recommendations = vec![];
     if !is_reliable {
-        recommendations.push("Judge agreement is below 85% — investigate divergent cases".to_string());
+        recommendations
+            .push("Judge agreement is below 85% — investigate divergent cases".to_string());
     }
     if divergent_count > (total_tests / 10).max(1) {
         recommendations.push(format!(
@@ -227,14 +227,16 @@ mod tests {
     #[test]
     fn test_compute_metrics_perfect_agreement() {
         // All judges agree perfectly
-        let judgements = vec![
-            (
-                "test1".to_string(),
-                "rubric1".to_string(),
-                vec![0.85, 0.85, 0.85],
-                vec!["judge_a".to_string(), "judge_b".to_string(), "judge_c".to_string()],
-            ),
-        ];
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![0.85, 0.85, 0.85],
+            vec![
+                "judge_a".to_string(),
+                "judge_b".to_string(),
+                "judge_c".to_string(),
+            ],
+        )];
 
         let (overall, _metrics, divergent) = compute_metrics(&judgements);
 
@@ -245,14 +247,16 @@ mod tests {
     #[test]
     fn test_compute_metrics_with_divergence() {
         // Judges disagree significantly
-        let judgements = vec![
-            (
-                "test1".to_string(),
-                "rubric1".to_string(),
-                vec![0.9, 0.5, 0.3], // Large gaps
-                vec!["judge_a".to_string(), "judge_b".to_string(), "judge_c".to_string()],
-            ),
-        ];
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![0.9, 0.5, 0.3], // Large gaps
+            vec![
+                "judge_a".to_string(),
+                "judge_b".to_string(),
+                "judge_c".to_string(),
+            ],
+        )];
 
         let (overall, _metrics, divergent) = compute_metrics(&judgements);
 
@@ -265,14 +269,12 @@ mod tests {
     #[test]
     fn test_compute_metrics_judge_scores_populated() {
         // Verify judge names are properly mapped to scores
-        let judgements = vec![
-            (
-                "test1".to_string(),
-                "rubric1".to_string(),
-                vec![0.9, 0.4],
-                vec!["fable".to_string(), "haiku".to_string()],
-            ),
-        ];
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![0.9, 0.4],
+            vec!["fable".to_string(), "haiku".to_string()],
+        )];
 
         let (_overall, _metrics, divergent) = compute_metrics(&judgements);
 
@@ -409,14 +411,8 @@ pub async fn validate_judge(
     let embed_client = Arc::new(OllamaClient::new(&run_args.ollama_url));
 
     // Execute the suite to get test results with outputs
-    let outcome = runner::execute_suite(
-        suite_path,
-        None,
-        &run_args,
-        &HashMap::new(),
-        &embed_client,
-    )
-    .await?;
+    let outcome =
+        runner::execute_suite(suite_path, None, &run_args, &HashMap::new(), &embed_client).await?;
 
     println!("  {} Executed {} tests", "✓".green(), outcome.total);
 
@@ -442,10 +438,7 @@ pub async fn validate_judge(
     }
 
     if test_judge_pairs.is_empty() {
-        println!(
-            "  {} No llm_judge assertions found in suite",
-            "ℹ".cyan()
-        );
+        println!("  {} No llm_judge assertions found in suite", "ℹ".cyan());
         return Ok(JudgeValidationReport {
             suite_name: suite.suite.name.clone(),
             total_tests: outcome.total as usize,
@@ -462,7 +455,11 @@ pub async fn validate_judge(
         });
     }
 
-    println!("  {} Found {} judge assertions", "✓".green(), test_judge_pairs.len());
+    println!(
+        "  {} Found {} judge assertions",
+        "✓".green(),
+        test_judge_pairs.len()
+    );
     println!();
 
     // ── Phase 3: Collect judge scores for each output ──
@@ -471,7 +468,7 @@ pub async fn validate_judge(
     pb.set_style(
         ProgressStyle::default_bar()
             .template("{spinner:.cyan} [{bar:20.cyan/blue}] {pos}/{len}")
-            .unwrap()
+            .unwrap(),
     );
 
     let mut judgements: Vec<(String, String, Vec<f64>, Vec<String>)> = Vec::new();
