@@ -49,34 +49,39 @@ pub struct ValidationSummary {
 
 /// Score a model output against a rubric using a specific judge model.
 /// Returns the raw score (0.0-1.0) without comparing to threshold.
+/// Truncates long outputs to avoid token limits; propagates errors for caller's error handling.
 pub async fn score_output_with_judge(judge: &ModelRef, output: &str, rubric: &str) -> Result<f64> {
+    // Truncate very long outputs to avoid token limits
+    let max_output_len = 2000;
+    let truncated_output = if output.len() > max_output_len {
+        format!("{}...[truncated]", &output[..max_output_len])
+    } else {
+        output.to_string()
+    };
+
     let prompt = format!(
         "RUBRIC:\n{}\n\nRESPONSE TO EVALUATE:\n{}\n\nScore the response.",
-        rubric, output
+        rubric, truncated_output
     );
 
     let system = "You are a strict evaluator. Score from 0.0 to 1.0. Reply with ONLY a JSON object: {\"score\": <float>, \"reason\": \"<one sentence>\"}. No other text.";
 
-    match judge
+    // Call the judge model — propagate errors so caller can handle them
+    let result = judge
         .provider
         .chat(&judge.model, Some(system), &prompt, 0.0)
-        .await
-    {
-        Ok(result) => {
-            if let Some((score, _)) = parse_judge_response(&result.text) {
-                Ok(score)
-            } else {
-                eprintln!(
-                    "  {} Failed to parse judge response from {}",
-                    "⚠".yellow(),
-                    judge.model
-                );
-                Ok(0.5) // Fallback score
-            }
-        }
-        Err(e) => {
-            eprintln!("  {} Judge {} failed: {}", "⚠".yellow(), judge.model, e);
-            Ok(0.0) // Fallback score for failures
+        .await?;
+
+    // Parse the response
+    match parse_judge_response(&result.text) {
+        Some((score, _reason)) => Ok(score),
+        None => {
+            // Response exists but is malformed
+            anyhow::bail!(
+                "Judge {} returned unparseable JSON: {}",
+                judge.model,
+                &result.text[..result.text.len().min(100)]
+            );
         }
     }
 }
@@ -478,19 +483,51 @@ pub async fn validate_judge(
         pb.inc(1);
 
         let mut scores = Vec::new();
+        let mut has_errors = false;
 
         // Run output through each judge
         for judge in &judge_refs {
             match score_output_with_judge(judge, &output, &rubric).await {
-                Ok(score) => scores.push(score),
+                Ok(score) => {
+                    scores.push(score);
+                }
                 Err(e) => {
-                    eprintln!("  {} Judge {} failed: {}", "⚠".yellow(), judge.model, e);
-                    scores.push(0.5); // Fallback score
+                    has_errors = true;
+                    let error_msg = e.to_string();
+
+                    // Categorize error type for better fallback strategy
+                    let fallback_score = if error_msg.contains("401") || error_msg.contains("Unauthorized")
+                    {
+                        eprintln!(
+                            "  {} {}: Invalid API key (401)",
+                            "✗".red(),
+                            judge.model
+                        );
+                        0.0 // Invalid key = unreliable
+                    } else if error_msg.contains("timeout") || error_msg.contains("timed out") {
+                        eprintln!("  {} {}: Timeout", "⏱".yellow(), judge.model);
+                        0.5 // Timeout = unknown
+                    } else if error_msg.contains("unparseable") {
+                        eprintln!("  {} {}: Bad JSON response", "⚠".yellow(), judge.model);
+                        0.5 // Parsing error = unknown
+                    } else {
+                        eprintln!("  {} {}: {}", "⚠".yellow(), judge.model, error_msg);
+                        0.5 // Generic error = unknown
+                    };
+
+                    scores.push(fallback_score);
                 }
             }
         }
 
         judgements.push((test_name, rubric, scores, judge_names.clone()));
+
+        if has_errors && judgements.len() % 5 == 0 {
+            pb.println(format!(
+                "  {} Some judges failed; using fallback scores",
+                "⚠".yellow()
+            ));
+        }
     }
     pb.finish_with_message("✓ Collected");
     println!();
