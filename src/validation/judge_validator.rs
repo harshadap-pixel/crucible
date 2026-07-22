@@ -226,6 +226,7 @@ pub fn generate_summary(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -522,7 +523,7 @@ pub async fn validate_judge(
 
         judgements.push((test_name, rubric, scores, judge_names.clone()));
 
-        if has_errors && judgements.len() % 5 == 0 {
+        if has_errors && judgements.len().is_multiple_of(5) {
             pb.println(format!(
                 "  {} Some judges failed; using fallback scores",
                 "⚠".yellow()
