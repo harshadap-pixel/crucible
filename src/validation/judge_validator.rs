@@ -19,6 +19,41 @@ pub struct JudgeValidationReport {
     pub per_rubric_metrics: HashMap<String, RubricMetrics>,
     pub divergent_cases: Vec<DivergentCase>,
     pub summary: ValidationSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub regression_data: Option<RegressionData>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RegressionData {
+    pub baseline_agreement: f64,
+    pub agreement_delta: f64, // Current - baseline (negative = regression)
+    pub is_regression: bool,  // True if delta < -5%
+    pub judge_degradation: HashMap<String, JudgeDegradation>,
+    pub trend_direction: TrendDirection,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JudgeDegradation {
+    pub judge_name: String,
+    pub previous_agreement: f64,
+    pub current_agreement: f64,
+    pub degradation_rate: f64, // Previous - current (positive = degradation)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum TrendDirection {
+    Improving, // Agreement increasing over time
+    Stable,    // Agreement within ±2%
+    Degrading, // Agreement decreasing over time
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JudgeValidationBaseline {
+    pub timestamp: String,
+    pub suite_name: String,
+    pub overall_agreement: f64,
+    pub per_judge_agreement: HashMap<String, f64>,
+    pub per_rubric_metrics: HashMap<String, RubricMetrics>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -64,6 +99,51 @@ pub enum FallbackStrategy {
     Average,
     /// Try primary judges, then fallback judges in order
     PrimaryWithFallback,
+}
+
+/// Compute regression metrics by comparing current results against baseline
+pub fn compute_regression(
+    current: &JudgeValidationReport,
+    baseline: &JudgeValidationBaseline,
+) -> RegressionData {
+    let agreement_delta = current.overall_agreement - baseline.overall_agreement;
+    let is_regression = agreement_delta < -5.0; // 5% drop = regression
+
+    // Compute judge-by-judge degradation
+    let mut judge_degradation = HashMap::new();
+    for judge in &current.judges_compared {
+        if let Some(baseline_agreement) = baseline.per_judge_agreement.get(judge) {
+            let current_agreement = current.overall_agreement; // Simplified: use overall
+            let degradation_rate = baseline_agreement - current_agreement;
+
+            judge_degradation.insert(
+                judge.clone(),
+                JudgeDegradation {
+                    judge_name: judge.clone(),
+                    previous_agreement: *baseline_agreement,
+                    current_agreement,
+                    degradation_rate,
+                },
+            );
+        }
+    }
+
+    // Determine trend direction
+    let trend_direction = if agreement_delta > 2.0 {
+        TrendDirection::Improving
+    } else if agreement_delta < -2.0 {
+        TrendDirection::Degrading
+    } else {
+        TrendDirection::Stable
+    };
+
+    RegressionData {
+        baseline_agreement: baseline.overall_agreement,
+        agreement_delta,
+        is_regression,
+        judge_degradation,
+        trend_direction,
+    }
 }
 
 impl FallbackConfig {
@@ -289,7 +369,7 @@ pub fn generate_summary(
 }
 
 #[cfg(test)]
-#[allow(clippy::items_after_test_module)]
+#[allow(clippy::items_after_test_module, unused_variables)]
 mod tests {
     use super::*;
 
@@ -345,7 +425,7 @@ mod tests {
             vec!["fable".to_string(), "haiku".to_string()],
         )];
 
-        let (_overall, _metrics, divergent) = compute_metrics(&judgements);
+        let (overall, metrics, divergent) = compute_metrics(&judgements);
 
         assert_eq!(divergent.len(), 1);
         assert_eq!(divergent[0].judge_scores.get("fable"), Some(&0.9));
@@ -600,6 +680,406 @@ mod tests {
         assert_eq!(config.strategy, FallbackStrategy::PrimaryWithFallback);
         assert_eq!(config.fallback_judges, vec!["haiku", "llama-3.1-8b"]);
     }
+
+    // ── Metrics Edge Cases ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_metrics_empty_judgements() {
+        // No tests at all
+        let judgements: Vec<(String, String, Vec<f64>, Vec<String>)> = vec![];
+
+        let (overall, metrics, divergent) = compute_metrics(&judgements);
+
+        assert_eq!(overall, 100.0); // Empty = perfect
+        assert_eq!(metrics.len(), 0);
+        assert_eq!(divergent.len(), 0);
+    }
+
+    #[test]
+    fn test_metrics_single_test_single_judge() {
+        // Only one test with one judge (can't compute agreement)
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![0.85],
+            vec!["judge_a".to_string()],
+        )];
+
+        let (overall, metrics, divergent) = compute_metrics(&judgements);
+
+        assert_eq!(overall, 100.0); // Single judge treated as perfect agreement
+        assert_eq!(metrics["rubric1"].agreement_percentage, 100.0);
+        assert_eq!(metrics["rubric1"].test_count, 1);
+        assert_eq!(divergent.len(), 0); // Can't diverge with one judge
+    }
+
+    #[test]
+    fn test_metrics_multiple_tests_single_judge() {
+        // Multiple tests, but only one judge (can't compute agreement)
+        let judgements = vec![
+            (
+                "test1".to_string(),
+                "rubric1".to_string(),
+                vec![0.85],
+                vec!["judge_a".to_string()],
+            ),
+            (
+                "test2".to_string(),
+                "rubric1".to_string(),
+                vec![0.75],
+                vec!["judge_a".to_string()],
+            ),
+        ];
+
+        let (overall, metrics, divergent) = compute_metrics(&judgements);
+
+        assert_eq!(overall, 100.0); // Single judge = perfect
+        assert_eq!(metrics["rubric1"].test_count, 2);
+        assert_eq!(divergent.len(), 0);
+    }
+
+    #[test]
+    fn test_metrics_empty_score_vectors() {
+        // Edge case: empty score vector (should not happen but test robustness)
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![], // Empty!
+            vec![],
+        )];
+
+        let (overall, metrics, divergent) = compute_metrics(&judgements);
+
+        // Empty scores treated as single judge (perfect agreement)
+        assert_eq!(overall, 100.0);
+        assert_eq!(metrics["rubric1"].agreement_percentage, 100.0);
+        assert_eq!(divergent.len(), 0);
+    }
+
+    #[test]
+    fn test_metrics_perfect_agreement_all_judges() {
+        // All judges agree perfectly (0.85, 0.85, 0.85)
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![0.85, 0.85, 0.85],
+            vec![
+                "judge_a".to_string(),
+                "judge_b".to_string(),
+                "judge_c".to_string(),
+            ],
+        )];
+
+        let (overall, metrics, divergent) = compute_metrics(&judgements);
+
+        assert_eq!(overall, 100.0);
+        assert_eq!(metrics["rubric1"].agreement_percentage, 100.0);
+        assert_eq!(metrics["rubric1"].disagreement_count, 0);
+        assert_eq!(divergent.len(), 0); // No divergence
+    }
+
+    #[test]
+    fn test_metrics_boundary_divergence_just_under_15_percent() {
+        // Scores differ by 0.149 (boundary: should NOT flag as divergent)
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![0.85, 0.701], // Difference = 0.149
+            vec!["judge_a".to_string(), "judge_b".to_string()],
+        )];
+
+        let (overall, metrics, divergent) = compute_metrics(&judgements);
+
+        assert!(overall < 100.0); // Not perfect agreement
+        assert_eq!(divergent.len(), 0); // 0.149 is NOT > 0.15, so no divergent case
+    }
+
+    #[test]
+    fn test_metrics_boundary_divergence_slightly_above_15_percent() {
+        // Scores differ by 0.151 (boundary: SHOULD flag as divergent)
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![0.85, 0.699], // Difference = 0.151
+            vec!["judge_a".to_string(), "judge_b".to_string()],
+        )];
+
+        let (overall, metrics, divergent) = compute_metrics(&judgements);
+
+        assert!(overall < 100.0);
+        assert_eq!(divergent.len(), 1); // 0.151 > 0.15, so flagged
+        assert!(divergent[0].max_disagreement > 0.15);
+    }
+
+    #[test]
+    fn test_metrics_multiple_rubrics() {
+        // Multiple different rubrics with different agreement levels
+        let judgements = vec![
+            (
+                "test1".to_string(),
+                "rubric_A".to_string(),
+                vec![0.9, 0.9, 0.9],
+                vec!["j1".to_string(), "j2".to_string(), "j3".to_string()],
+            ),
+            (
+                "test2".to_string(),
+                "rubric_B".to_string(),
+                vec![0.5, 0.9], // Divergent
+                vec!["j1".to_string(), "j2".to_string()],
+            ),
+        ];
+
+        let (overall, metrics, divergent) = compute_metrics(&judgements);
+
+        assert_eq!(metrics.len(), 2);
+        assert_eq!(metrics["rubric_A"].agreement_percentage, 100.0);
+        assert!(metrics["rubric_B"].agreement_percentage < 100.0);
+        assert_eq!(divergent.len(), 1);
+        assert_eq!(divergent[0].rubric, "rubric_B");
+    }
+
+    #[test]
+    fn test_metrics_extreme_score_ranges() {
+        // Judges give extreme ranges: 0.0 to 1.0
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![0.0, 0.5, 1.0],
+            vec!["j1".to_string(), "j2".to_string(), "j3".to_string()],
+        )];
+
+        let (overall, metrics, divergent) = compute_metrics(&judgements);
+
+        // Max disagreement = 1.0 - 0.0 = 1.0, clearly divergent
+        assert_eq!(divergent.len(), 1);
+        assert_eq!(divergent[0].max_disagreement, 1.0);
+        assert_eq!(divergent[0].judge_scores["j1"], 0.0);
+        assert_eq!(divergent[0].judge_scores["j3"], 1.0);
+    }
+
+    #[test]
+    fn test_metrics_near_boundary_scores() {
+        // All scores very close but within bounds
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![0.80, 0.81, 0.82],
+            vec!["j1".to_string(), "j2".to_string(), "j3".to_string()],
+        )];
+
+        let (overall, metrics, divergent) = compute_metrics(&judgements);
+
+        assert!(overall > 95.0); // Very high agreement
+        assert_eq!(divergent.len(), 0); // 0.02 < 0.15
+    }
+
+    // ── Regression Tracking Tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_regression_no_change() {
+        let current = JudgeValidationReport {
+            suite_name: "test".to_string(),
+            total_tests: 5,
+            tests_with_judges: 3,
+            judges_compared: vec!["j1".to_string(), "j2".to_string()],
+            overall_agreement: 90.0,
+            per_rubric_metrics: HashMap::new(),
+            divergent_cases: vec![],
+            summary: ValidationSummary {
+                is_reliable: true,
+                confidence_level: "high".to_string(),
+                recommendations: vec![],
+            },
+            regression_data: None,
+        };
+
+        let baseline = JudgeValidationBaseline {
+            timestamp: "2026-07-21".to_string(),
+            suite_name: "test".to_string(),
+            overall_agreement: 90.0,
+            per_judge_agreement: [("j1".to_string(), 90.0), ("j2".to_string(), 90.0)]
+                .iter()
+                .cloned()
+                .collect(),
+            per_rubric_metrics: HashMap::new(),
+        };
+
+        let regression = compute_regression(&current, &baseline);
+
+        assert_eq!(regression.agreement_delta, 0.0);
+        assert!(!regression.is_regression);
+        assert_eq!(regression.trend_direction, TrendDirection::Stable);
+    }
+
+    #[test]
+    fn test_regression_improvement() {
+        let current = JudgeValidationReport {
+            suite_name: "test".to_string(),
+            total_tests: 5,
+            tests_with_judges: 3,
+            judges_compared: vec!["j1".to_string()],
+            overall_agreement: 95.0,
+            per_rubric_metrics: HashMap::new(),
+            divergent_cases: vec![],
+            summary: ValidationSummary {
+                is_reliable: true,
+                confidence_level: "high".to_string(),
+                recommendations: vec![],
+            },
+            regression_data: None,
+        };
+
+        let baseline = JudgeValidationBaseline {
+            timestamp: "2026-07-20".to_string(),
+            suite_name: "test".to_string(),
+            overall_agreement: 90.0,
+            per_judge_agreement: [("j1".to_string(), 90.0)].iter().cloned().collect(),
+            per_rubric_metrics: HashMap::new(),
+        };
+
+        let regression = compute_regression(&current, &baseline);
+
+        assert_eq!(regression.agreement_delta, 5.0); // +5%
+        assert!(!regression.is_regression); // Positive delta
+        assert_eq!(regression.trend_direction, TrendDirection::Improving);
+    }
+
+    #[test]
+    fn test_regression_minor_degradation() {
+        let current = JudgeValidationReport {
+            suite_name: "test".to_string(),
+            total_tests: 5,
+            tests_with_judges: 3,
+            judges_compared: vec!["j1".to_string()],
+            overall_agreement: 88.0,
+            per_rubric_metrics: HashMap::new(),
+            divergent_cases: vec![],
+            summary: ValidationSummary {
+                is_reliable: true,
+                confidence_level: "high".to_string(),
+                recommendations: vec![],
+            },
+            regression_data: None,
+        };
+
+        let baseline = JudgeValidationBaseline {
+            timestamp: "2026-07-20".to_string(),
+            suite_name: "test".to_string(),
+            overall_agreement: 90.0,
+            per_judge_agreement: [("j1".to_string(), 90.0)].iter().cloned().collect(),
+            per_rubric_metrics: HashMap::new(),
+        };
+
+        let regression = compute_regression(&current, &baseline);
+
+        assert_eq!(regression.agreement_delta, -2.0); // -2%
+        assert!(!regression.is_regression); // -2% is within tolerance
+        assert_eq!(regression.trend_direction, TrendDirection::Stable); // Within ±2%
+    }
+
+    #[test]
+    fn test_regression_major_degradation() {
+        let current = JudgeValidationReport {
+            suite_name: "test".to_string(),
+            total_tests: 5,
+            tests_with_judges: 3,
+            judges_compared: vec!["j1".to_string()],
+            overall_agreement: 84.0,
+            per_rubric_metrics: HashMap::new(),
+            divergent_cases: vec![],
+            summary: ValidationSummary {
+                is_reliable: false,
+                confidence_level: "low".to_string(),
+                recommendations: vec!["Investigate judge degradation".to_string()],
+            },
+            regression_data: None,
+        };
+
+        let baseline = JudgeValidationBaseline {
+            timestamp: "2026-07-20".to_string(),
+            suite_name: "test".to_string(),
+            overall_agreement: 90.0,
+            per_judge_agreement: [("j1".to_string(), 90.0)].iter().cloned().collect(),
+            per_rubric_metrics: HashMap::new(),
+        };
+
+        let regression = compute_regression(&current, &baseline);
+
+        assert_eq!(regression.agreement_delta, -6.0); // -6%
+        assert!(regression.is_regression); // Exceeds -5% threshold
+        assert_eq!(regression.trend_direction, TrendDirection::Degrading);
+    }
+
+    #[test]
+    fn test_regression_judge_degradation() {
+        let current = JudgeValidationReport {
+            suite_name: "test".to_string(),
+            total_tests: 5,
+            tests_with_judges: 3,
+            judges_compared: vec!["j1".to_string(), "j2".to_string()],
+            overall_agreement: 85.0,
+            per_rubric_metrics: HashMap::new(),
+            divergent_cases: vec![],
+            summary: ValidationSummary {
+                is_reliable: false,
+                confidence_level: "medium".to_string(),
+                recommendations: vec![],
+            },
+            regression_data: None,
+        };
+
+        let baseline = JudgeValidationBaseline {
+            timestamp: "2026-07-20".to_string(),
+            suite_name: "test".to_string(),
+            overall_agreement: 92.0,
+            per_judge_agreement: [("j1".to_string(), 92.0), ("j2".to_string(), 92.0)]
+                .iter()
+                .cloned()
+                .collect(),
+            per_rubric_metrics: HashMap::new(),
+        };
+
+        let regression = compute_regression(&current, &baseline);
+
+        assert_eq!(regression.judge_degradation.len(), 2);
+        assert!(regression.judge_degradation.contains_key("j1"));
+        assert!(regression.judge_degradation.contains_key("j2"));
+        assert_eq!(
+            regression.judge_degradation["j1"].degradation_rate,
+            7.0 // 92 - 85
+        );
+    }
+
+    #[test]
+    fn test_trend_direction_boundary() {
+        // Exactly at -2% boundary (should be Stable, not Degrading)
+        let current = JudgeValidationReport {
+            suite_name: "test".to_string(),
+            total_tests: 5,
+            tests_with_judges: 3,
+            judges_compared: vec!["j1".to_string()],
+            overall_agreement: 88.0,
+            per_rubric_metrics: HashMap::new(),
+            divergent_cases: vec![],
+            summary: ValidationSummary {
+                is_reliable: true,
+                confidence_level: "high".to_string(),
+                recommendations: vec![],
+            },
+            regression_data: None,
+        };
+
+        let baseline = JudgeValidationBaseline {
+            timestamp: "2026-07-20".to_string(),
+            suite_name: "test".to_string(),
+            overall_agreement: 90.0,
+            per_judge_agreement: [("j1".to_string(), 90.0)].iter().cloned().collect(),
+            per_rubric_metrics: HashMap::new(),
+        };
+
+        let regression = compute_regression(&current, &baseline);
+        assert_eq!(regression.trend_direction, TrendDirection::Stable);
+    }
 }
 
 /// Main validation orchestrator — Phase 3 Complete
@@ -699,6 +1179,7 @@ pub async fn validate_judge(
                 confidence_level: "high".to_string(),
                 recommendations: vec!["No judge assertions to validate".to_string()],
             },
+            regression_data: None,
         });
     }
 
@@ -788,5 +1269,6 @@ pub async fn validate_judge(
         per_rubric_metrics,
         divergent_cases,
         summary,
+        regression_data: None,
     })
 }
