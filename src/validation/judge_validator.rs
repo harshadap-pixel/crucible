@@ -497,24 +497,20 @@ pub async fn validate_judge(
                     let error_msg = e.to_string();
 
                     // Categorize error type for better fallback strategy
-                    let fallback_score = if error_msg.contains("401") || error_msg.contains("Unauthorized")
-                    {
-                        eprintln!(
-                            "  {} {}: Invalid API key (401)",
-                            "✗".red(),
-                            judge.model
-                        );
-                        0.0 // Invalid key = unreliable
-                    } else if error_msg.contains("timeout") || error_msg.contains("timed out") {
-                        eprintln!("  {} {}: Timeout", "⏱".yellow(), judge.model);
-                        0.5 // Timeout = unknown
-                    } else if error_msg.contains("unparseable") {
-                        eprintln!("  {} {}: Bad JSON response", "⚠".yellow(), judge.model);
-                        0.5 // Parsing error = unknown
-                    } else {
-                        eprintln!("  {} {}: {}", "⚠".yellow(), judge.model, error_msg);
-                        0.5 // Generic error = unknown
-                    };
+                    let fallback_score =
+                        if error_msg.contains("401") || error_msg.contains("Unauthorized") {
+                            eprintln!("  {} {}: Invalid API key (401)", "✗".red(), judge.model);
+                            0.0 // Invalid key = unreliable
+                        } else if error_msg.contains("timeout") || error_msg.contains("timed out") {
+                            eprintln!("  {} {}: Timeout", "⏱".yellow(), judge.model);
+                            0.5 // Timeout = unknown
+                        } else if error_msg.contains("unparseable") {
+                            eprintln!("  {} {}: Bad JSON response", "⚠".yellow(), judge.model);
+                            0.5 // Parsing error = unknown
+                        } else {
+                            eprintln!("  {} {}: {}", "⚠".yellow(), judge.model, error_msg);
+                            0.5 // Generic error = unknown
+                        };
 
                     scores.push(fallback_score);
                 }
