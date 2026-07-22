@@ -7,7 +7,7 @@ use crate::cli::ValidateJudgeArgs;
 use crate::embedded;
 
 pub use judge_validator::{
-    compute_metrics, generate_summary, score_output_with_judge, validate_judge,
+    compute_metrics, generate_summary, score_output_with_judge, validate_judge, FallbackConfig,
 };
 
 pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
@@ -18,6 +18,9 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
     } else {
         embedded::resolve_suite_path(&args.suite)
     };
+
+    // Build fallback config first (before moving args fields)
+    let fallback_config = FallbackConfig::from_cli_args(&args);
 
     // Parse judges
     let judges = args.judges.unwrap_or_else(|| {
@@ -30,7 +33,7 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
     let eval_model = args.model.as_deref().unwrap_or("llama3.1:8b");
 
     // Run validation
-    let report = validate_judge(&suite_path, eval_model, judge_list).await?;
+    let report = validate_judge(&suite_path, eval_model, judge_list, fallback_config).await?;
 
     // Display results
     println!("\n{} Validation Results", "═".repeat(65).green().bold());

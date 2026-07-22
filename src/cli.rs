@@ -264,6 +264,30 @@ pub struct ValidateJudgeArgs {
     #[arg(long, default_value_t = false)]
     pub show_divergent: bool,
 
+    /// Fallback strategy: severity | skip | average | primary+fallback
+    #[arg(long, default_value = "severity")]
+    pub fallback_strategy: String,
+
+    /// Fallback score for auth errors (401) when using severity strategy (0.0-1.0)
+    #[arg(long, default_value = "0.0")]
+    pub fallback_auth_score: f64,
+
+    /// Fallback score for timeouts when using severity strategy (0.0-1.0)
+    #[arg(long, default_value = "0.5")]
+    pub fallback_timeout_score: f64,
+
+    /// Fallback score for other errors when using severity strategy (0.0-1.0)
+    #[arg(long, default_value = "0.5")]
+    pub fallback_error_score: f64,
+
+    /// Secondary judges to try if primary fails: judge1,judge2 (for primary+fallback strategy)
+    #[arg(long)]
+    pub fallback_judges: Option<String>,
+
+    /// Skip test entirely if all judges fail (instead of using fallback scores)
+    #[arg(long, default_value_t = false)]
+    pub skip_on_all_fail: bool,
+
     /// Ollama base URL to probe for local models
     #[arg(long, default_value = "http://localhost:11434", env = "OLLAMA_HOST")]
     pub ollama_url: String,

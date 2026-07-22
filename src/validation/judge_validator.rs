@@ -44,8 +44,71 @@ pub struct ValidationSummary {
     pub recommendations: Vec<String>,
 }
 
-// TODO: Implementation stubs
-// These will be implemented in Phase 2-4
+#[derive(Debug, Clone)]
+pub struct FallbackConfig {
+    pub strategy: FallbackStrategy,
+    pub auth_score: f64,
+    pub timeout_score: f64,
+    pub error_score: f64,
+    pub fallback_judges: Vec<String>,
+    pub skip_on_all_fail: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FallbackStrategy {
+    /// Use severity-based scores (0.0 for auth, 0.5 for timeout/generic)
+    Severity,
+    /// Skip test if all judges fail
+    Skip,
+    /// Use average of working judges
+    Average,
+    /// Try primary judges, then fallback judges in order
+    PrimaryWithFallback,
+}
+
+impl FallbackConfig {
+    pub fn from_cli_args(args: &crate::cli::ValidateJudgeArgs) -> Self {
+        let strategy = match args.fallback_strategy.as_str() {
+            "skip" => FallbackStrategy::Skip,
+            "average" => FallbackStrategy::Average,
+            "primary+fallback" => FallbackStrategy::PrimaryWithFallback,
+            _ => FallbackStrategy::Severity,
+        };
+
+        let fallback_judges = args
+            .fallback_judges
+            .as_ref()
+            .map(|j| j.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_default();
+
+        Self {
+            strategy,
+            auth_score: args.fallback_auth_score,
+            timeout_score: args.fallback_timeout_score,
+            error_score: args.fallback_error_score,
+            fallback_judges,
+            skip_on_all_fail: args.skip_on_all_fail,
+        }
+    }
+
+    /// Determine fallback score based on error type and strategy
+    pub fn get_fallback_score(&self, error_msg: &str) -> Option<f64> {
+        match self.strategy {
+            FallbackStrategy::Severity => {
+                if error_msg.contains("401") || error_msg.contains("Unauthorized") {
+                    Some(self.auth_score)
+                } else if error_msg.contains("timeout") || error_msg.contains("timed out") {
+                    Some(self.timeout_score)
+                } else {
+                    Some(self.error_score)
+                }
+            }
+            FallbackStrategy::Skip => None, // Signal to skip this test
+            FallbackStrategy::Average => None, // Will be computed from working judges
+            FallbackStrategy::PrimaryWithFallback => None, // Will try fallback judges
+        }
+    }
+}
 
 /// Score a model output against a rubric using a specific judge model.
 /// Returns the raw score (0.0-1.0) without comparing to threshold.
@@ -360,6 +423,183 @@ mod tests {
         let json = r#"{"invalid": "format"}"#;
         assert!(parse_judge_response(json).is_none());
     }
+
+    // ── Fallback Strategy Tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_fallback_severity_auth_error() {
+        let config = FallbackConfig {
+            strategy: FallbackStrategy::Severity,
+            auth_score: 0.0,
+            timeout_score: 0.5,
+            error_score: 0.5,
+            fallback_judges: vec![],
+            skip_on_all_fail: false,
+        };
+
+        let score = config.get_fallback_score("401 Unauthorized");
+        assert_eq!(score, Some(0.0));
+    }
+
+    #[test]
+    fn test_fallback_severity_timeout_error() {
+        let config = FallbackConfig {
+            strategy: FallbackStrategy::Severity,
+            auth_score: 0.0,
+            timeout_score: 0.5,
+            error_score: 0.4,
+            fallback_judges: vec![],
+            skip_on_all_fail: false,
+        };
+
+        let score = config.get_fallback_score("request timed out");
+        assert_eq!(score, Some(0.5));
+    }
+
+    #[test]
+    fn test_fallback_severity_generic_error() {
+        let config = FallbackConfig {
+            strategy: FallbackStrategy::Severity,
+            auth_score: 0.0,
+            timeout_score: 0.5,
+            error_score: 0.3,
+            fallback_judges: vec![],
+            skip_on_all_fail: false,
+        };
+
+        let score = config.get_fallback_score("some other error");
+        assert_eq!(score, Some(0.3));
+    }
+
+    #[test]
+    fn test_fallback_skip_strategy_returns_none() {
+        let config = FallbackConfig {
+            strategy: FallbackStrategy::Skip,
+            auth_score: 0.0,
+            timeout_score: 0.5,
+            error_score: 0.5,
+            fallback_judges: vec![],
+            skip_on_all_fail: false,
+        };
+
+        // Skip strategy should return None for any error
+        assert_eq!(config.get_fallback_score("401 Unauthorized"), None);
+        assert_eq!(config.get_fallback_score("timeout"), None);
+        assert_eq!(config.get_fallback_score("any error"), None);
+    }
+
+    #[test]
+    fn test_fallback_average_strategy_returns_none() {
+        let config = FallbackConfig {
+            strategy: FallbackStrategy::Average,
+            auth_score: 0.0,
+            timeout_score: 0.5,
+            error_score: 0.5,
+            fallback_judges: vec![],
+            skip_on_all_fail: false,
+        };
+
+        // Average strategy should return None (computed later from working judges)
+        assert_eq!(config.get_fallback_score("any error"), None);
+    }
+
+    #[test]
+    fn test_fallback_primary_with_fallback_returns_none() {
+        let config = FallbackConfig {
+            strategy: FallbackStrategy::PrimaryWithFallback,
+            auth_score: 0.0,
+            timeout_score: 0.5,
+            error_score: 0.5,
+            fallback_judges: vec!["haiku".to_string()],
+            skip_on_all_fail: false,
+        };
+
+        // PrimaryWithFallback should return None (tries fallback judge instead)
+        assert_eq!(config.get_fallback_score("any error"), None);
+    }
+
+    #[test]
+    fn test_fallback_custom_scores() {
+        let config = FallbackConfig {
+            strategy: FallbackStrategy::Severity,
+            auth_score: 0.2,    // Custom auth score
+            timeout_score: 0.7, // Custom timeout score
+            error_score: 0.6,   // Custom error score
+            fallback_judges: vec![],
+            skip_on_all_fail: false,
+        };
+
+        assert_eq!(config.get_fallback_score("401"), Some(0.2));
+        assert_eq!(config.get_fallback_score("timeout"), Some(0.7));
+        assert_eq!(config.get_fallback_score("other"), Some(0.6));
+    }
+
+    #[test]
+    fn test_fallback_config_from_defaults() {
+        // Verify default fallback config values
+        let cli_args = crate::cli::ValidateJudgeArgs {
+            suite: "default.toml".to_string(),
+            model: None,
+            judges: None,
+            show_divergent: false,
+            fallback_strategy: "severity".to_string(),
+            fallback_auth_score: 0.0,
+            fallback_timeout_score: 0.5,
+            fallback_error_score: 0.5,
+            fallback_judges: None,
+            skip_on_all_fail: false,
+            ollama_url: "http://localhost:11434".to_string(),
+        };
+
+        let config = FallbackConfig::from_cli_args(&cli_args);
+        assert_eq!(config.strategy, FallbackStrategy::Severity);
+        assert_eq!(config.auth_score, 0.0);
+        assert_eq!(config.timeout_score, 0.5);
+        assert_eq!(config.error_score, 0.5);
+        assert!(!config.skip_on_all_fail);
+    }
+
+    #[test]
+    fn test_fallback_config_skip_on_all_fail() {
+        let cli_args = crate::cli::ValidateJudgeArgs {
+            suite: "default.toml".to_string(),
+            model: None,
+            judges: None,
+            show_divergent: false,
+            fallback_strategy: "skip".to_string(),
+            fallback_auth_score: 0.0,
+            fallback_timeout_score: 0.5,
+            fallback_error_score: 0.5,
+            fallback_judges: None,
+            skip_on_all_fail: true,
+            ollama_url: "http://localhost:11434".to_string(),
+        };
+
+        let config = FallbackConfig::from_cli_args(&cli_args);
+        assert_eq!(config.strategy, FallbackStrategy::Skip);
+        assert!(config.skip_on_all_fail);
+    }
+
+    #[test]
+    fn test_fallback_judges_parsing() {
+        let cli_args = crate::cli::ValidateJudgeArgs {
+            suite: "default.toml".to_string(),
+            model: None,
+            judges: None,
+            show_divergent: false,
+            fallback_strategy: "primary+fallback".to_string(),
+            fallback_auth_score: 0.0,
+            fallback_timeout_score: 0.5,
+            fallback_error_score: 0.5,
+            fallback_judges: Some("haiku,llama-3.1-8b".to_string()),
+            skip_on_all_fail: false,
+            ollama_url: "http://localhost:11434".to_string(),
+        };
+
+        let config = FallbackConfig::from_cli_args(&cli_args);
+        assert_eq!(config.strategy, FallbackStrategy::PrimaryWithFallback);
+        assert_eq!(config.fallback_judges, vec!["haiku", "llama-3.1-8b"]);
+    }
 }
 
 /// Main validation orchestrator — Phase 3 Complete
@@ -372,6 +612,7 @@ pub async fn validate_judge(
     suite_path: &str,
     model: &str,
     judges: Vec<String>,
+    fallback_config: FallbackConfig,
 ) -> Result<JudgeValidationReport> {
     println!("\n{}", "Judge Validation".cyan().bold());
     println!("{}", "─".repeat(70).dimmed());
@@ -496,23 +737,28 @@ pub async fn validate_judge(
                     has_errors = true;
                     let error_msg = e.to_string();
 
-                    // Categorize error type for better fallback strategy
-                    let fallback_score =
+                    // Determine fallback score based on configured strategy
+                    if let Some(fallback_score) = fallback_config.get_fallback_score(&error_msg) {
+                        // Log the error with appropriate level
                         if error_msg.contains("401") || error_msg.contains("Unauthorized") {
                             eprintln!("  {} {}: Invalid API key (401)", "✗".red(), judge.model);
-                            0.0 // Invalid key = unreliable
                         } else if error_msg.contains("timeout") || error_msg.contains("timed out") {
                             eprintln!("  {} {}: Timeout", "⏱".yellow(), judge.model);
-                            0.5 // Timeout = unknown
                         } else if error_msg.contains("unparseable") {
                             eprintln!("  {} {}: Bad JSON response", "⚠".yellow(), judge.model);
-                            0.5 // Parsing error = unknown
                         } else {
                             eprintln!("  {} {}: {}", "⚠".yellow(), judge.model, error_msg);
-                            0.5 // Generic error = unknown
-                        };
-
-                    scores.push(fallback_score);
+                        }
+                        scores.push(fallback_score);
+                    } else {
+                        // Skip strategy or will compute average later
+                        eprintln!(
+                            "  {} {}: Skipping due to strategy ({})",
+                            "⊘".yellow(),
+                            judge.model,
+                            format!("{:?}", fallback_config.strategy).to_lowercase()
+                        );
+                    }
                 }
             }
         }
