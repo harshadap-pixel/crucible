@@ -26,8 +26,11 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
     });
     let judge_list: Vec<String> = judges.split(',').map(|s| s.trim().to_string()).collect();
 
-    // For now, use a default eval model. In production, this would be a CLI arg
-    let eval_model = "llama3.1:8b";
+    // Use specified model or default to llama3.1:8b
+    let eval_model = args
+        .model
+        .as_deref()
+        .unwrap_or("llama3.1:8b");
 
     // Run validation
     let report = validate_judge(&suite_path, eval_model, judge_list).await?;

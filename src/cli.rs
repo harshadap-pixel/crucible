@@ -251,6 +251,10 @@ pub struct ValidateJudgeArgs {
     #[arg(short, long, default_value = "safety")]
     pub suite: String,
 
+    /// Model to run tests with (e.g., llama3.1:8b, qwen2.5-coder:7b, openai:gpt-4o)
+    #[arg(short, long)]
+    pub model: Option<String>,
+
     /// Judge models to compare (comma-separated)
     /// Defaults: anthropic:claude-fable-5,anthropic:claude-3-5-haiku-latest,groq:llama-3.1-8b-instant
     #[arg(long)]
