@@ -168,15 +168,10 @@ pub struct BaselineInfo {
 
 /// Sanitize filename to be filesystem-safe
 fn sanitize_filename(name: &str) -> String {
-    name.replace('/', "_")
-        .replace('\\', "_")
-        .replace(':', "_")
-        .replace('?', "_")
-        .replace('*', "_")
-        .replace('"', "_")
-        .replace('<', "_")
-        .replace('>', "_")
-        .replace('|', "_")
+    regex::Regex::new(r#"[/\\:?*"<>|]"#)
+        .unwrap()
+        .replace_all(name, "_")
+        .to_string()
 }
 
 #[cfg(test)]

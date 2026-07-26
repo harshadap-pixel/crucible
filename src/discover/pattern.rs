@@ -45,7 +45,12 @@ pub trait PatternDetector: Send + Sync {
 pub struct RegexDetector;
 
 impl PatternDetector for RegexDetector {
-    fn detect(&self, content: &str, _language: Language, _path: &str) -> Result<Vec<PatternMatch>> {
+    fn detect(
+        &self,
+        _content: &str,
+        _language: Language,
+        _path: &str,
+    ) -> Result<Vec<PatternMatch>> {
         // Placeholder: existing regex logic will go here
         Ok(Vec::new())
     }
