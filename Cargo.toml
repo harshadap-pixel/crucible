@@ -38,6 +38,14 @@ clap         = { version = "4",    features = ["derive", "color", "env"] }
 regex        = "1"
 jsonschema   = "0.26"
 
+# code analysis — tree-sitter AST parsing
+tree-sitter           = "0.20"
+tree-sitter-typescript = "0.20"
+tree-sitter-python    = "0.20"
+
+# utilities
+dirs   = "5"
+
 # storage — bundled sqlite, zero system dep
 rusqlite     = { version = "0.31", features = ["bundled"] }
 

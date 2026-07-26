@@ -1,4 +1,5 @@
 pub mod generator;
+pub mod pattern;
 pub mod scanner;
 
 use anyhow::Result;

@@ -1,3 +1,4 @@
+pub mod baseline;
 pub mod judge_validator;
 
 use anyhow::Result;
@@ -6,6 +7,7 @@ use colored::Colorize;
 use crate::cli::ValidateJudgeArgs;
 use crate::embedded;
 
+pub use baseline::BaselineManager;
 pub use judge_validator::{
     compute_metrics, generate_summary, score_output_with_judge, validate_judge, FallbackConfig,
 };
