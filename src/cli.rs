@@ -209,7 +209,7 @@ pub struct BaselineArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum BaselineAction {
-    /// Mark the most recent run as the regression baseline
+    /// Mark the most recent run as the regression baseline (for test runs)
     Set {
         /// Specific run ID to mark as baseline (defaults to last run)
         #[arg(long)]
@@ -217,6 +217,12 @@ pub enum BaselineAction {
     },
     /// Show current baseline info
     Show,
+    /// List all saved validation baselines with timestamps
+    List {
+        /// Limit number of baselines to show (default: 10)
+        #[arg(short, long, default_value_t = 10)]
+        limit: usize,
+    },
 }
 
 // ── compare ──────────────────────────────────────────────────────────────────

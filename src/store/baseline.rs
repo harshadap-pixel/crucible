@@ -41,6 +41,45 @@ pub async fn run(args: BaselineArgs) -> Result<()> {
                 }
             }
         }
+
+        BaselineAction::List { limit } => {
+            use crate::validation::BaselineManager;
+
+            match BaselineManager::list_baselines() {
+                Ok(baselines) => {
+                    if baselines.is_empty() {
+                        println!(
+                            "  {}",
+                            "No validation baselines saved. Run `crucible validate-judge` first."
+                                .yellow()
+                        );
+                    } else {
+                        println!(
+                            "\n{} Saved Validation Baselines",
+                            "═".repeat(60).green().bold()
+                        );
+                        for (idx, baseline) in baselines.iter().take(limit).enumerate() {
+                            println!("  {}. {}", idx + 1, baseline.suite_name.cyan());
+                            println!("     Timestamp: {}", baseline.timestamp.dimmed());
+                            println!("     Agreement: {:.1}%", baseline.overall_agreement);
+                            println!("     File: {}", baseline.filename.dimmed());
+                            println!();
+                        }
+
+                        if baselines.len() > limit {
+                            println!(
+                                "  {} ({} more baselines available)",
+                                "…".dimmed(),
+                                baselines.len() - limit
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("  {} Failed to list baselines: {}", "✗".red(), e);
+                }
+            }
+        }
     }
     Ok(())
 }
