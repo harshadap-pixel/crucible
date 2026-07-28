@@ -109,6 +109,8 @@ impl TreeSitterDetector {
 
 impl PatternDetector for TreeSitterDetector {
     fn detect(&self, content: &str, language: Language, _path: &str) -> Result<Vec<PatternMatch>> {
+        use super::queries;
+
         if language == Language::Unknown {
             return Ok(Vec::new());
         }
@@ -116,13 +118,38 @@ impl PatternDetector for TreeSitterDetector {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(self.ts_language)?;
 
-        let _tree = parser
-            .parse(content.as_bytes(), None)
+        let content_bytes = content.as_bytes();
+        let tree = parser
+            .parse(content_bytes, None)
             .ok_or_else(|| anyhow::anyhow!("Failed to parse code with tree-sitter"))?;
 
-        // Placeholder: queries will be added based on patterns
-        // For now, return empty to show structure is initialized
-        Ok(Vec::new())
+        let mut matches = Vec::new();
+
+        // Run patterns based on language
+        let patterns = match language {
+            Language::TypeScript | Language::JavaScript => {
+                let mut all = queries::typescript::EVAL_RUNNER_PATTERNS.to_vec();
+                all.extend(queries::typescript::RAG_PATTERNS);
+                all
+            }
+            Language::Python => {
+                let mut all = queries::python::EVAL_RUNNER_PATTERNS.to_vec();
+                all.extend(queries::python::RAG_PATTERNS);
+                all
+            }
+            Language::Unknown => return Ok(Vec::new()),
+        };
+
+        for (pattern_name, query_str) in patterns {
+            if let Ok(results) = self.query_pattern(&tree, query_str, content_bytes) {
+                for mut result in results {
+                    result.pattern_name = pattern_name.to_string();
+                    matches.push(result);
+                }
+            }
+        }
+
+        Ok(matches)
     }
 
     fn name(&self) -> &str {
