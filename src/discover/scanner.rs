@@ -3,6 +3,7 @@
 use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
+use crate::discover::pattern::{HybridDetector, Language as PatternLanguage, PatternDetector};
 
 // ── MCP transport type ────────────────────────────────────────────────────────
 
@@ -254,17 +255,26 @@ pub fn scan(dir: &str) -> Result<Vec<Finding>> {
             .to_string();
         let lang = detect_language(path);
         let content = match fs::read_to_string(path) {
-            Ok(c) => c.to_lowercase(),
+            Ok(c) => c,
             Err(_) => continue,
         };
+        let content_lower = content.to_lowercase();
 
-        // ── Eval runner detection ─────────────────────────────────────────
-        let eval_signals = eval_runner_signals(&content, &rel);
+        // ── Eval runner detection (keyword + AST-based) ────────────────────
+        let mut eval_signals = eval_runner_signals(&content_lower, &rel);
+
+        // Try AST-based detection as enhancement
+        if let Ok(ast_matches) = try_ast_detection(&content, &lang, &rel) {
+            for m in ast_matches {
+                eval_signals.push(format!("ast:{}", m.pattern_name));
+            }
+        }
+
         if eval_signals.len() >= 2 {
             let tsconfig = find_nearest_tsconfig(path, root);
             let run_cmd = infer_run_cmd(path, &tsconfig, &lang);
-            let test_count = estimate_test_count(&content, &lang);
-            let summary_pat = infer_summary_pattern(&content);
+            let test_count = estimate_test_count(&content_lower, &lang);
+            let summary_pat = infer_summary_pattern(&content_lower);
             findings.push(Finding {
                 path: path.display().to_string(),
                 signals: eval_signals,
@@ -279,10 +289,16 @@ pub fn scan(dir: &str) -> Result<Vec<Finding>> {
             continue; // one finding per file
         }
 
-        // ── NL2SQL function detection ─────────────────────────────────────
-        if let Some(fn_name) = detect_nl2sql_function(&content) {
+        // ── NL2SQL function detection (keyword + AST-based) ──────────────────
+        let mut nl2sql_fn = detect_nl2sql_function(&content_lower);
+        if nl2sql_fn.is_none() {
+            // Try AST detection if keyword-based failed
+            nl2sql_fn = try_ast_nl2sql(&content, &lang);
+        }
+
+        if let Some(fn_name) = nl2sql_fn {
             let tsconfig = find_nearest_tsconfig(path, root);
-            let allowed_schemas = extract_allowed_schemas(&content);
+            let allowed_schemas = extract_allowed_schemas(&content_lower);
             findings.push(Finding {
                 path: path.display().to_string(),
                 signals: vec![fn_name.clone()],
@@ -298,7 +314,7 @@ pub fn scan(dir: &str) -> Result<Vec<Finding>> {
         }
 
         // ── RAG pipeline detection ────────────────────────────────────────
-        let rag_profile = detect_rag_profile(&content);
+        let rag_profile = detect_rag_profile(&content_lower);
         if !rag_profile.is_empty() {
             // Compute signals before moving profile into the enum variant
             let signals = rag_profile.all_signals();
@@ -313,7 +329,7 @@ pub fn scan(dir: &str) -> Result<Vec<Finding>> {
         }
 
         // ── MCP server detection ──────────────────────────────────────────
-        if let Some(mcp) = detect_mcp_server(&content) {
+        if let Some(mcp) = detect_mcp_server(&content_lower) {
             let mut signals = mcp
                 .transports
                 .iter()
@@ -337,7 +353,7 @@ pub fn scan(dir: &str) -> Result<Vec<Finding>> {
         }
 
         // ── Generic AI service detection ──────────────────────────────────
-        if let Some(provider) = detect_ai_provider(&content) {
+        if let Some(provider) = detect_ai_provider(&content_lower) {
             findings.push(Finding {
                 path: path.display().to_string(),
                 signals: vec![provider.clone()],
@@ -1172,4 +1188,64 @@ fn extract_quoted_value(s: &str) -> Option<String> {
         }
     }
     None
+}
+
+// ── Tree-Sitter AST-based detection ───────────────────────────────────────
+
+/// Convert scanner Language to pattern detector Language
+fn to_pattern_language(lang: &Language) -> PatternLanguage {
+    match lang {
+        Language::TypeScript => PatternLanguage::TypeScript,
+        Language::Python => PatternLanguage::Python,
+        Language::Unknown => PatternLanguage::Unknown,
+    }
+}
+
+/// Try to detect eval runner patterns using Tree-Sitter AST
+fn try_ast_detection(content: &str, lang: &Language, path: &str) -> Result<Vec<crate::discover::pattern::PatternMatch>> {
+    let pattern_lang = to_pattern_language(lang);
+    if pattern_lang == PatternLanguage::Unknown {
+        return Ok(Vec::new());
+    }
+
+    let detector = HybridDetector::new(pattern_lang);
+    match detector.detect(content, pattern_lang, path) {
+        Ok(matches) => {
+            // Filter to eval-runner relevant patterns
+            let relevant = matches.into_iter()
+                .filter(|m| {
+                    matches!(m.pattern_name.as_str(),
+                        "test_blocks" | "assertions" | "process_exit" |
+                        "pytest_functions" | "unittest_classes" | "sys_exit")
+                })
+                .collect();
+            Ok(relevant)
+        }
+        Err(_) => Ok(Vec::new()), // Silent failure: AST parsing is optional enhancement
+    }
+}
+
+/// Try to detect NL2SQL functions using Tree-Sitter AST
+fn try_ast_nl2sql(content: &str, lang: &Language) -> Option<String> {
+    let pattern_lang = to_pattern_language(lang);
+    if pattern_lang == PatternLanguage::Unknown {
+        return None;
+    }
+
+    let detector = HybridDetector::new(pattern_lang);
+    match detector.detect(content, pattern_lang, "") {
+        Ok(matches) => {
+            // Look for NL2SQL validator patterns
+            for m in matches {
+                if m.pattern_name.contains("validate_function") {
+                    // Extract function name from details or use a generic marker
+                    if m.confidence > 0.8 {
+                        return Some(format!("validateSQL (ast:{})", m.pattern_name));
+                    }
+                }
+            }
+            None
+        }
+        Err(_) => None, // Silent failure
+    }
 }
