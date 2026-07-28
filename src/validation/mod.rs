@@ -9,7 +9,8 @@ use crate::embedded;
 
 pub use baseline::BaselineManager;
 pub use judge_validator::{
-    compute_metrics, generate_summary, score_output_with_judge, validate_judge, FallbackConfig,
+    compute_metrics, compute_regression, generate_summary, score_output_with_judge, validate_judge,
+    FallbackConfig,
 };
 
 pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
@@ -35,7 +36,13 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
     let eval_model = args.model.as_deref().unwrap_or("llama3.1:8b");
 
     // Run validation
-    let report = validate_judge(&suite_path, eval_model, judge_list, fallback_config).await?;
+    let mut report = validate_judge(&suite_path, eval_model, judge_list, fallback_config).await?;
+
+    // Load baseline and compute regression if available
+    if let Ok(Some(baseline)) = BaselineManager::load_current_baseline() {
+        let regression = compute_regression(&report, &baseline);
+        report.regression_data = Some(regression);
+    }
 
     // Display results
     println!("\n{} Validation Results", "═".repeat(65).green().bold());
@@ -84,6 +91,55 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
                 case.rubric.dimmed(),
                 format!("{:.2}", case.max_disagreement).red()
             );
+        }
+    }
+
+    // Regression tracking
+    if let Some(regression) = &report.regression_data {
+        println!("\n{} Regression Analysis vs Baseline", "📊".cyan());
+        println!(
+            "  Baseline agreement:     {:.1}%",
+            regression.baseline_agreement
+        );
+        println!("  Current agreement:      {:.1}%", report.overall_agreement);
+        println!(
+            "  Delta:                  {}",
+            if regression.agreement_delta >= 0.0 {
+                format!("+{:.1}%", regression.agreement_delta).green()
+            } else {
+                format!("{:.1}%", regression.agreement_delta).red()
+            }
+        );
+        println!(
+            "  Trend:                  {}",
+            match regression.trend_direction {
+                judge_validator::TrendDirection::Improving => "↑ Improving".green(),
+                judge_validator::TrendDirection::Stable => "→ Stable".yellow(),
+                judge_validator::TrendDirection::Degrading => "↓ Degrading".red(),
+            }
+        );
+
+        if regression.is_regression {
+            println!(
+                "\n⚠️  {} REGRESSION DETECTED (>5% drop)",
+                "Alert".bold().red()
+            );
+        }
+
+        // Judge degradation
+        if !regression.judge_degradation.is_empty() {
+            println!("\n{} Judge Degradation", "🔍".yellow());
+            for (judge, degradation) in &regression.judge_degradation {
+                if degradation.degradation_rate > 0.1 {
+                    println!(
+                        "  {}: {:.1}% → {:.1}% (↓ {:.1}%)",
+                        judge.yellow(),
+                        degradation.previous_agreement,
+                        degradation.current_agreement,
+                        degradation.degradation_rate
+                    );
+                }
+            }
         }
     }
 
