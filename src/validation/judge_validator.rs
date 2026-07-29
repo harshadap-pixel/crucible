@@ -16,6 +16,7 @@ pub struct JudgeValidationReport {
     pub tests_with_judges: usize,
     pub judges_compared: Vec<String>,
     pub overall_agreement: f64,
+    pub per_judge_agreement: HashMap<String, f64>, // Individual judge agreement scores
     pub per_rubric_metrics: HashMap<String, RubricMetrics>,
     pub divergent_cases: Vec<DivergentCase>,
     pub summary: ValidationSummary,
@@ -239,6 +240,55 @@ fn parse_judge_response(text: &str) -> Option<(f64, String)> {
     let score = v.get("score")?.as_f64()?;
     let reason = v.get("reason")?.as_str()?.to_string();
     Some((score.clamp(0.0, 1.0), reason))
+}
+
+/// Compute per-judge agreement scores by comparing each judge to the median consensus.
+pub fn compute_per_judge_metrics(
+    judgements: &[(String, String, Vec<f64>, Vec<String>)],
+) -> HashMap<String, f64> {
+    let mut judge_scores: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut judge_deviations: HashMap<String, Vec<f64>> = HashMap::new();
+
+    for (_test_name, _rubric, scores, judge_names) in judgements {
+        if scores.len() <= 1 {
+            continue; // Need at least 2 judges for comparison
+        }
+
+        // Compute median consensus across all judges
+        let mut sorted = scores.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = if sorted.len() % 2 == 0 {
+            (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) / 2.0
+        } else {
+            sorted[sorted.len() / 2]
+        };
+
+        // Track each judge's absolute deviation from median
+        for (judge_name, score) in judge_names.iter().zip(scores.iter()) {
+            let deviation = (score - median).abs();
+            judge_scores
+                .entry(judge_name.clone())
+                .or_insert_with(Vec::new)
+                .push(*score);
+            judge_deviations
+                .entry(judge_name.clone())
+                .or_insert_with(Vec::new)
+                .push(deviation);
+        }
+    }
+
+    // Compute agreement score for each judge: 1.0 - avg_deviation
+    let mut per_judge_agreement = HashMap::new();
+    for (judge_name, deviations) in judge_deviations {
+        if deviations.is_empty() {
+            continue;
+        }
+        let avg_deviation = deviations.iter().sum::<f64>() / deviations.len() as f64;
+        let agreement = (1.0 - avg_deviation.min(1.0)) * 100.0;
+        per_judge_agreement.insert(judge_name, agreement);
+    }
+
+    per_judge_agreement
 }
 
 /// Compute agreement metrics from judge scores.
@@ -469,6 +519,92 @@ mod tests {
             .recommendations
             .iter()
             .any(|r| r.contains("High divergence")));
+    }
+
+    // ── Per-Judge Agreement Tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_per_judge_agreement_perfect_consensus() {
+        // All judges agree perfectly
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![0.8, 0.8, 0.8],
+            vec!["j1".to_string(), "j2".to_string(), "j3".to_string()],
+        )];
+
+        let per_judge = compute_per_judge_metrics(&judgements);
+
+        // Each judge should have 100% agreement (no deviation from median)
+        assert_eq!(per_judge.len(), 3);
+        assert!(per_judge["j1"] >= 99.0); // ~100% due to floating point
+        assert!(per_judge["j2"] >= 99.0);
+        assert!(per_judge["j3"] >= 99.0);
+    }
+
+    #[test]
+    fn test_per_judge_agreement_varied_scores() {
+        // Judges give different scores: 0.5, 0.7, 0.9
+        // Median = 0.7
+        // j1 deviation = |0.5 - 0.7| = 0.2 → agreement = 80%
+        // j2 deviation = |0.7 - 0.7| = 0.0 → agreement = 100%
+        // j3 deviation = |0.9 - 0.7| = 0.2 → agreement = 80%
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![0.5, 0.7, 0.9],
+            vec!["j1".to_string(), "j2".to_string(), "j3".to_string()],
+        )];
+
+        let per_judge = compute_per_judge_metrics(&judgements);
+
+        assert_eq!(per_judge.len(), 3);
+        assert!((per_judge["j1"] - 80.0).abs() < 1.0); // j1: 80%
+        assert!(per_judge["j2"] >= 99.0); // j2: 100%
+        assert!((per_judge["j3"] - 80.0).abs() < 1.0); // j3: 80%
+    }
+
+    #[test]
+    fn test_per_judge_agreement_multiple_tests() {
+        // Multiple judgements to average deviations over
+        let judgements = vec![
+            (
+                "test1".to_string(),
+                "rubric1".to_string(),
+                vec![0.8, 0.9], // Median = 0.85, j1 dev=0.05, j2 dev=0.05
+                vec!["j1".to_string(), "j2".to_string()],
+            ),
+            (
+                "test2".to_string(),
+                "rubric1".to_string(),
+                vec![0.6, 0.6], // Median = 0.6, j1 dev=0.0, j2 dev=0.0
+                vec!["j1".to_string(), "j2".to_string()],
+            ),
+        ];
+
+        let per_judge = compute_per_judge_metrics(&judgements);
+
+        assert_eq!(per_judge.len(), 2);
+        // j1: avg deviation = (0.05 + 0.0) / 2 = 0.025 → agreement = 97.5%
+        assert!((per_judge["j1"] - 97.5).abs() < 1.0);
+        // j2: avg deviation = (0.05 + 0.0) / 2 = 0.025 → agreement = 97.5%
+        assert!((per_judge["j2"] - 97.5).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_per_judge_agreement_single_judge_ignored() {
+        // Single judge per judgement (no comparison possible)
+        let judgements = vec![(
+            "test1".to_string(),
+            "rubric1".to_string(),
+            vec![0.8], // Only one judge
+            vec!["j1".to_string()],
+        )];
+
+        let per_judge = compute_per_judge_metrics(&judgements);
+
+        // No per-judge metrics computed (need at least 2 judges for comparison)
+        assert_eq!(per_judge.len(), 0);
     }
 
     #[test]
@@ -883,6 +1019,10 @@ mod tests {
             tests_with_judges: 3,
             judges_compared: vec!["j1".to_string(), "j2".to_string()],
             overall_agreement: 90.0,
+            per_judge_agreement: [("j1".to_string(), 90.0), ("j2".to_string(), 90.0)]
+                .iter()
+                .cloned()
+                .collect(),
             per_rubric_metrics: HashMap::new(),
             divergent_cases: vec![],
             summary: ValidationSummary {
@@ -919,6 +1059,7 @@ mod tests {
             tests_with_judges: 3,
             judges_compared: vec!["j1".to_string()],
             overall_agreement: 95.0,
+            per_judge_agreement: [("j1".to_string(), 95.0)].iter().cloned().collect(),
             per_rubric_metrics: HashMap::new(),
             divergent_cases: vec![],
             summary: ValidationSummary {
@@ -952,6 +1093,7 @@ mod tests {
             tests_with_judges: 3,
             judges_compared: vec!["j1".to_string()],
             overall_agreement: 88.0,
+            per_judge_agreement: [("j1".to_string(), 88.0)].iter().cloned().collect(),
             per_rubric_metrics: HashMap::new(),
             divergent_cases: vec![],
             summary: ValidationSummary {
@@ -985,6 +1127,7 @@ mod tests {
             tests_with_judges: 3,
             judges_compared: vec!["j1".to_string()],
             overall_agreement: 84.0,
+            per_judge_agreement: [("j1".to_string(), 84.0)].iter().cloned().collect(),
             per_rubric_metrics: HashMap::new(),
             divergent_cases: vec![],
             summary: ValidationSummary {
@@ -1018,6 +1161,10 @@ mod tests {
             tests_with_judges: 3,
             judges_compared: vec!["j1".to_string(), "j2".to_string()],
             overall_agreement: 85.0,
+            per_judge_agreement: [("j1".to_string(), 85.0), ("j2".to_string(), 85.0)]
+                .iter()
+                .cloned()
+                .collect(),
             per_rubric_metrics: HashMap::new(),
             divergent_cases: vec![],
             summary: ValidationSummary {
@@ -1059,6 +1206,7 @@ mod tests {
             tests_with_judges: 3,
             judges_compared: vec!["j1".to_string()],
             overall_agreement: 88.0,
+            per_judge_agreement: [("j1".to_string(), 88.0)].iter().cloned().collect(),
             per_rubric_metrics: HashMap::new(),
             divergent_cases: vec![],
             summary: ValidationSummary {
@@ -1170,8 +1318,9 @@ pub async fn validate_judge(
             suite_name: suite.suite.name.clone(),
             total_tests: outcome.total as usize,
             tests_with_judges: 0,
-            judges_compared: judges,
+            judges_compared: judges.clone(),
             overall_agreement: 100.0,
+            per_judge_agreement: judges.into_iter().map(|j| (j, 100.0)).collect(),
             per_rubric_metrics: HashMap::new(),
             divergent_cases: vec![],
             summary: ValidationSummary {
@@ -1258,6 +1407,7 @@ pub async fn validate_judge(
 
     // Compute metrics
     let (overall_agreement, per_rubric_metrics, divergent_cases) = compute_metrics(&judgements);
+    let per_judge_agreement = compute_per_judge_metrics(&judgements);
     let summary = generate_summary(overall_agreement, divergent_cases.len(), judgements.len());
 
     Ok(JudgeValidationReport {
@@ -1266,6 +1416,7 @@ pub async fn validate_judge(
         tests_with_judges: judgements.len(),
         judges_compared: judges,
         overall_agreement,
+        per_judge_agreement,
         per_rubric_metrics,
         divergent_cases,
         summary,

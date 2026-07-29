@@ -9,8 +9,8 @@ use crate::embedded;
 
 pub use baseline::BaselineManager;
 pub use judge_validator::{
-    compute_metrics, compute_regression, generate_summary, score_output_with_judge, validate_judge,
-    FallbackConfig,
+    compute_metrics, compute_per_judge_metrics, compute_regression, generate_summary,
+    score_output_with_judge, validate_judge, FallbackConfig,
 };
 
 pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
@@ -66,6 +66,23 @@ pub async fn run(args: ValidateJudgeArgs) -> Result<()> {
             "✗ NO".red()
         }
     );
+
+    // Per-judge metrics
+    if !report.per_judge_agreement.is_empty() {
+        println!("\n{} Per-Judge Agreement", "─".repeat(65).cyan());
+        let mut judges: Vec<_> = report.per_judge_agreement.iter().collect();
+        judges.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
+        for (judge, agreement) in judges {
+            let color = if *agreement >= 90.0 {
+                format!("{:.1}%", agreement).green()
+            } else if *agreement >= 75.0 {
+                format!("{:.1}%", agreement).yellow()
+            } else {
+                format!("{:.1}%", agreement).red()
+            };
+            println!("  {}: {}", judge.cyan(), color);
+        }
+    }
 
     // Per-rubric metrics
     if !report.per_rubric_metrics.is_empty() {
