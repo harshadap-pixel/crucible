@@ -9,6 +9,43 @@ use crate::providers::{ModelRef, OllamaClient};
 use crate::runner;
 use indicatif::{ProgressBar, ProgressStyle};
 
+/// Feature 2: Judge Specialization Detection
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct SpecializationAnalysis {
+    pub judge_specializations: HashMap<String, JudgeSpecialization>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JudgeSpecialization {
+    pub judge_name: String,
+    pub overall_agreement: f64,
+    pub rubric_scores: HashMap<String, f64>,
+    pub best_rubric: Option<String>,
+    pub worst_rubric: Option<String>,
+    pub specialization_strength: f64,
+    pub is_specialist: bool,
+}
+
+/// Feature 3: Cross-Judge Consensus Score
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ConsensusMetrics {
+    pub consensus_threshold: f64,
+    pub full_consensus_count: usize,
+    pub majority_consensus_count: usize,
+    pub split_decision_count: usize,
+    pub consensus_percentage: f64,
+    pub flagged_for_review: Vec<ConsensusFlag>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ConsensusFlag {
+    pub test_name: String,
+    pub rubric: String,
+    pub judge_scores: HashMap<String, f64>,
+    pub reason: String,
+    pub groups: Vec<Vec<String>>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JudgeValidationReport {
     pub suite_name: String,
@@ -20,6 +57,10 @@ pub struct JudgeValidationReport {
     pub per_rubric_metrics: HashMap<String, RubricMetrics>,
     pub divergent_cases: Vec<DivergentCase>,
     pub summary: ValidationSummary,
+    #[serde(default)]
+    pub specialization_analysis: Option<SpecializationAnalysis>,
+    #[serde(default)]
+    pub consensus_metrics: Option<ConsensusMetrics>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub regression_data: Option<RegressionData>,
 }
@@ -290,6 +331,105 @@ pub fn compute_per_judge_metrics(
 
     per_judge_agreement
 }
+
+/// Feature 2: Compute judge specialization across rubrics
+pub fn compute_judge_specialization(
+    judgements: &[(String, String, Vec<f64>, Vec<String>)],
+) -> SpecializationAnalysis {
+    let mut judge_rubric_scores: HashMap<String, HashMap<String, Vec<f64>>> = HashMap::new();
+    let mut judge_overall: HashMap<String, Vec<f64>> = HashMap::new();
+
+    for (_test_name, rubric, scores, judge_names) in judgements {
+        for (judge_name, score) in judge_names.iter().zip(scores.iter()) {
+            judge_rubric_scores.entry(judge_name.clone()).or_default().entry(rubric.clone()).or_default().push(*score);
+            judge_overall.entry(judge_name.clone()).or_default().push(*score);
+        }
+    }
+
+    let mut judge_specializations = HashMap::new();
+    for (judge_name, rubric_data) in judge_rubric_scores {
+        let overall_agreement = judge_overall.get(&judge_name).map(|scores| (scores.iter().sum::<f64>() / scores.len() as f64) * 100.0).unwrap_or(0.0);
+        let mut rubric_scores = HashMap::new();
+        for (rubric, scores_vec) in &rubric_data {
+            let avg = scores_vec.iter().sum::<f64>() / scores_vec.len() as f64;
+            rubric_scores.insert(rubric.clone(), avg * 100.0);
+        }
+        let best_rubric = rubric_scores.iter().max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)).map(|(k, _)| k.clone());
+        let worst_rubric = rubric_scores.iter().min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)).map(|(k, _)| k.clone());
+        let specialization_strength = if let (Some(b), Some(w)) = (&best_rubric, &worst_rubric) {
+            rubric_scores.get(b).unwrap_or(&0.0) - rubric_scores.get(w).unwrap_or(&0.0)
+        } else { 0.0 };
+        judge_specializations.insert(judge_name.clone(), JudgeSpecialization {
+            judge_name, overall_agreement, rubric_scores, best_rubric, worst_rubric,
+            specialization_strength, is_specialist: specialization_strength > 15.0,
+        });
+    }
+    SpecializationAnalysis { judge_specializations }
+}
+
+/// Feature 3: Compute consensus metrics
+pub fn compute_consensus_metrics(j: &[(String, String, Vec<f64>, Vec<String>)]) -> ConsensusMetrics {
+    const T: f64 = 0.10;
+    let (mut f, mut ma, mut s, mut fl) = (0, 0, 0, Vec::new());
+    for (tn, ru, sc, jn) in j {
+        if sc.len() <= 1 { f += 1; continue; }
+        let g = group_judges_by_agreement(sc, jn, T);
+        match g.len() {
+            1 => f += 1,
+            2 => {
+                let sz: Vec<_> = g.iter().map(|x| x.len()).collect();
+                if sz[0] == sc.len() - 1 || sz[1] == sc.len() - 1 { ma += 1; } else {
+                    s += 1;
+                    let mut js = HashMap::new();
+                    for (j, sc) in jn.iter().zip(sc.iter()) { js.insert(j.clone(), *sc); }
+                    fl.push(ConsensusFlag {
+                        test_name: tn.clone(), rubric: ru.clone(), judge_scores: js,
+                        reason: "Split".into(), groups: g,
+                    });
+                }
+            }
+            _ => {
+                s += 1;
+                let mut js = HashMap::new();
+                for (j, sc) in jn.iter().zip(sc.iter()) { js.insert(j.clone(), *sc); }
+                fl.push(ConsensusFlag {
+                    test_name: tn.clone(), rubric: ru.clone(), judge_scores: js,
+                    reason: format!("{}g", g.len()), groups: g,
+                });
+            }
+        }
+    }
+    let tot = f + ma + s;
+    ConsensusMetrics {
+        consensus_threshold: T,
+        full_consensus_count: f,
+        majority_consensus_count: ma,
+        split_decision_count: s,
+        consensus_percentage: if tot > 0 { ((f + ma) as f64 / tot as f64) * 100.0 } else { 100.0 },
+        flagged_for_review: fl,
+    }
+}
+
+fn group_judges_by_agreement(sc: &[f64], jn: &[String], t: f64) -> Vec<Vec<String>> {
+    let mut g: Vec<Vec<String>> = Vec::new();
+    let mut idx: Vec<usize> = (0..sc.len()).collect();
+    idx.sort_by(|a, b| sc[*a].partial_cmp(&sc[*b]).unwrap_or(std::cmp::Ordering::Equal));
+    let mut a = vec![false; sc.len()];
+    for &i in &idx {
+        if a[i] { continue; }
+        let mut gr = vec![jn[i].clone()];
+        a[i] = true;
+        for &j in &idx {
+            if !a[j] && (sc[i] - sc[j]).abs() <= t {
+                gr.push(jn[j].clone());
+                a[j] = true;
+            }
+        }
+        g.push(gr);
+    }
+    g
+}
+
 
 /// Compute agreement metrics from judge scores.
 pub fn compute_metrics(
@@ -1030,6 +1170,8 @@ mod tests {
                 confidence_level: "high".to_string(),
                 recommendations: vec![],
             },
+            specialization_analysis: None,
+            consensus_metrics: None,
             regression_data: None,
         };
 
@@ -1067,6 +1209,8 @@ mod tests {
                 confidence_level: "high".to_string(),
                 recommendations: vec![],
             },
+            specialization_analysis: None,
+            consensus_metrics: None,
             regression_data: None,
         };
 
@@ -1101,6 +1245,8 @@ mod tests {
                 confidence_level: "high".to_string(),
                 recommendations: vec![],
             },
+            specialization_analysis: None,
+            consensus_metrics: None,
             regression_data: None,
         };
 
@@ -1135,6 +1281,8 @@ mod tests {
                 confidence_level: "low".to_string(),
                 recommendations: vec!["Investigate judge degradation".to_string()],
             },
+            specialization_analysis: None,
+            consensus_metrics: None,
             regression_data: None,
         };
 
@@ -1172,6 +1320,8 @@ mod tests {
                 confidence_level: "medium".to_string(),
                 recommendations: vec![],
             },
+            specialization_analysis: None,
+            consensus_metrics: None,
             regression_data: None,
         };
 
@@ -1214,6 +1364,8 @@ mod tests {
                 confidence_level: "high".to_string(),
                 recommendations: vec![],
             },
+            specialization_analysis: None,
+            consensus_metrics: None,
             regression_data: None,
         };
 
@@ -1328,6 +1480,8 @@ pub async fn validate_judge(
                 confidence_level: "high".to_string(),
                 recommendations: vec!["No judge assertions to validate".to_string()],
             },
+            specialization_analysis: None,
+            consensus_metrics: None,
             regression_data: None,
         });
     }
@@ -1408,6 +1562,8 @@ pub async fn validate_judge(
     // Compute metrics
     let (overall_agreement, per_rubric_metrics, divergent_cases) = compute_metrics(&judgements);
     let per_judge_agreement = compute_per_judge_metrics(&judgements);
+    let specialization_analysis = compute_judge_specialization(&judgements);
+    let consensus_metrics = compute_consensus_metrics(&judgements);
     let summary = generate_summary(overall_agreement, divergent_cases.len(), judgements.len());
 
     Ok(JudgeValidationReport {
@@ -1420,6 +1576,8 @@ pub async fn validate_judge(
         per_rubric_metrics,
         divergent_cases,
         summary,
+        specialization_analysis: Some(specialization_analysis),
+        consensus_metrics: Some(consensus_metrics),
         regression_data: None,
     })
 }
