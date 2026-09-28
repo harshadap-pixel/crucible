@@ -1,9 +1,9 @@
+use crate::discover::pattern::{HybridDetector, Language as PatternLanguage, PatternDetector};
 /// Scanner — walks a directory tree and identifies AI code patterns.
 /// Pure static analysis: no code execution, no imports, just file reading.
 use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::discover::pattern::{HybridDetector, Language as PatternLanguage, PatternDetector};
 
 // ── MCP transport type ────────────────────────────────────────────────────────
 
@@ -1202,7 +1202,11 @@ fn to_pattern_language(lang: &Language) -> PatternLanguage {
 }
 
 /// Try to detect eval runner patterns using Tree-Sitter AST
-fn try_ast_detection(content: &str, lang: &Language, path: &str) -> Result<Vec<crate::discover::pattern::PatternMatch>> {
+fn try_ast_detection(
+    content: &str,
+    lang: &Language,
+    path: &str,
+) -> Result<Vec<crate::discover::pattern::PatternMatch>> {
     let pattern_lang = to_pattern_language(lang);
     if pattern_lang == PatternLanguage::Unknown {
         return Ok(Vec::new());
@@ -1212,11 +1216,18 @@ fn try_ast_detection(content: &str, lang: &Language, path: &str) -> Result<Vec<c
     match detector.detect(content, pattern_lang, path) {
         Ok(matches) => {
             // Filter to eval-runner relevant patterns
-            let relevant = matches.into_iter()
+            let relevant = matches
+                .into_iter()
                 .filter(|m| {
-                    matches!(m.pattern_name.as_str(),
-                        "test_blocks" | "assertions" | "process_exit" |
-                        "pytest_functions" | "unittest_classes" | "sys_exit")
+                    matches!(
+                        m.pattern_name.as_str(),
+                        "test_blocks"
+                            | "assertions"
+                            | "process_exit"
+                            | "pytest_functions"
+                            | "unittest_classes"
+                            | "sys_exit"
+                    )
                 })
                 .collect();
             Ok(relevant)

@@ -309,11 +309,11 @@ pub fn compute_per_judge_metrics(
             let deviation = (score - median).abs();
             judge_scores
                 .entry(judge_name.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(*score);
             judge_deviations
                 .entry(judge_name.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(deviation);
         }
     }
@@ -341,60 +341,106 @@ pub fn compute_judge_specialization(
 
     for (_test_name, rubric, scores, judge_names) in judgements {
         for (judge_name, score) in judge_names.iter().zip(scores.iter()) {
-            judge_rubric_scores.entry(judge_name.clone()).or_default().entry(rubric.clone()).or_default().push(*score);
-            judge_overall.entry(judge_name.clone()).or_default().push(*score);
+            judge_rubric_scores
+                .entry(judge_name.clone())
+                .or_default()
+                .entry(rubric.clone())
+                .or_default()
+                .push(*score);
+            judge_overall
+                .entry(judge_name.clone())
+                .or_default()
+                .push(*score);
         }
     }
 
     let mut judge_specializations = HashMap::new();
     for (judge_name, rubric_data) in judge_rubric_scores {
-        let overall_agreement = judge_overall.get(&judge_name).map(|scores| (scores.iter().sum::<f64>() / scores.len() as f64) * 100.0).unwrap_or(0.0);
+        let overall_agreement = judge_overall
+            .get(&judge_name)
+            .map(|scores| (scores.iter().sum::<f64>() / scores.len() as f64) * 100.0)
+            .unwrap_or(0.0);
         let mut rubric_scores = HashMap::new();
         for (rubric, scores_vec) in &rubric_data {
             let avg = scores_vec.iter().sum::<f64>() / scores_vec.len() as f64;
             rubric_scores.insert(rubric.clone(), avg * 100.0);
         }
-        let best_rubric = rubric_scores.iter().max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)).map(|(k, _)| k.clone());
-        let worst_rubric = rubric_scores.iter().min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)).map(|(k, _)| k.clone());
+        let best_rubric = rubric_scores
+            .iter()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(k, _)| k.clone());
+        let worst_rubric = rubric_scores
+            .iter()
+            .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(k, _)| k.clone());
         let specialization_strength = if let (Some(b), Some(w)) = (&best_rubric, &worst_rubric) {
             rubric_scores.get(b).unwrap_or(&0.0) - rubric_scores.get(w).unwrap_or(&0.0)
-        } else { 0.0 };
-        judge_specializations.insert(judge_name.clone(), JudgeSpecialization {
-            judge_name, overall_agreement, rubric_scores, best_rubric, worst_rubric,
-            specialization_strength, is_specialist: specialization_strength > 15.0,
-        });
+        } else {
+            0.0
+        };
+        judge_specializations.insert(
+            judge_name.clone(),
+            JudgeSpecialization {
+                judge_name,
+                overall_agreement,
+                rubric_scores,
+                best_rubric,
+                worst_rubric,
+                specialization_strength,
+                is_specialist: specialization_strength > 15.0,
+            },
+        );
     }
-    SpecializationAnalysis { judge_specializations }
+    SpecializationAnalysis {
+        judge_specializations,
+    }
 }
 
 /// Feature 3: Compute consensus metrics
-pub fn compute_consensus_metrics(j: &[(String, String, Vec<f64>, Vec<String>)]) -> ConsensusMetrics {
+pub fn compute_consensus_metrics(
+    j: &[(String, String, Vec<f64>, Vec<String>)],
+) -> ConsensusMetrics {
     const T: f64 = 0.10;
     let (mut f, mut ma, mut s, mut fl) = (0, 0, 0, Vec::new());
     for (tn, ru, sc, jn) in j {
-        if sc.len() <= 1 { f += 1; continue; }
+        if sc.len() <= 1 {
+            f += 1;
+            continue;
+        }
         let g = group_judges_by_agreement(sc, jn, T);
         match g.len() {
             1 => f += 1,
             2 => {
                 let sz: Vec<_> = g.iter().map(|x| x.len()).collect();
-                if sz[0] == sc.len() - 1 || sz[1] == sc.len() - 1 { ma += 1; } else {
+                if sz[0] == sc.len() - 1 || sz[1] == sc.len() - 1 {
+                    ma += 1;
+                } else {
                     s += 1;
                     let mut js = HashMap::new();
-                    for (j, sc) in jn.iter().zip(sc.iter()) { js.insert(j.clone(), *sc); }
+                    for (j, sc) in jn.iter().zip(sc.iter()) {
+                        js.insert(j.clone(), *sc);
+                    }
                     fl.push(ConsensusFlag {
-                        test_name: tn.clone(), rubric: ru.clone(), judge_scores: js,
-                        reason: "Split".into(), groups: g,
+                        test_name: tn.clone(),
+                        rubric: ru.clone(),
+                        judge_scores: js,
+                        reason: "Split".into(),
+                        groups: g,
                     });
                 }
             }
             _ => {
                 s += 1;
                 let mut js = HashMap::new();
-                for (j, sc) in jn.iter().zip(sc.iter()) { js.insert(j.clone(), *sc); }
+                for (j, sc) in jn.iter().zip(sc.iter()) {
+                    js.insert(j.clone(), *sc);
+                }
                 fl.push(ConsensusFlag {
-                    test_name: tn.clone(), rubric: ru.clone(), judge_scores: js,
-                    reason: format!("{}g", g.len()), groups: g,
+                    test_name: tn.clone(),
+                    rubric: ru.clone(),
+                    judge_scores: js,
+                    reason: format!("{}g", g.len()),
+                    groups: g,
                 });
             }
         }
@@ -405,7 +451,11 @@ pub fn compute_consensus_metrics(j: &[(String, String, Vec<f64>, Vec<String>)]) 
         full_consensus_count: f,
         majority_consensus_count: ma,
         split_decision_count: s,
-        consensus_percentage: if tot > 0 { ((f + ma) as f64 / tot as f64) * 100.0 } else { 100.0 },
+        consensus_percentage: if tot > 0 {
+            ((f + ma) as f64 / tot as f64) * 100.0
+        } else {
+            100.0
+        },
         flagged_for_review: fl,
     }
 }
@@ -413,10 +463,16 @@ pub fn compute_consensus_metrics(j: &[(String, String, Vec<f64>, Vec<String>)]) 
 fn group_judges_by_agreement(sc: &[f64], jn: &[String], t: f64) -> Vec<Vec<String>> {
     let mut g: Vec<Vec<String>> = Vec::new();
     let mut idx: Vec<usize> = (0..sc.len()).collect();
-    idx.sort_by(|a, b| sc[*a].partial_cmp(&sc[*b]).unwrap_or(std::cmp::Ordering::Equal));
+    idx.sort_by(|a, b| {
+        sc[*a]
+            .partial_cmp(&sc[*b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut a = vec![false; sc.len()];
     for &i in &idx {
-        if a[i] { continue; }
+        if a[i] {
+            continue;
+        }
         let mut gr = vec![jn[i].clone()];
         a[i] = true;
         for &j in &idx {
@@ -429,7 +485,6 @@ fn group_judges_by_agreement(sc: &[f64], jn: &[String], t: f64) -> Vec<Vec<Strin
     }
     g
 }
-
 
 /// Compute agreement metrics from judge scores.
 pub fn compute_metrics(

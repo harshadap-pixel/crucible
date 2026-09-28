@@ -1,5 +1,5 @@
-/// Tree-Sitter query patterns for detecting AI code constructs
-/// Queries match specific AST patterns for eval runners, RAG pipelines, NL2SQL, etc.
+//! Tree-Sitter query patterns for detecting AI code constructs
+//! Queries match specific AST patterns for eval runners, RAG pipelines, NL2SQL, etc.
 
 /// Queries for TypeScript/JavaScript eval runners
 pub mod typescript {
