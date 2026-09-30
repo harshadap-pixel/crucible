@@ -35,6 +35,9 @@ pub struct ConsensusMetrics {
     pub split_decision_count: usize,
     pub consensus_percentage: f64,
     pub flagged_for_review: Vec<ConsensusFlag>,
+    /// Tests with fewer than two judge scores; excluded from the consensus counts.
+    #[serde(default)]
+    pub insufficient_judges_count: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -63,6 +66,12 @@ pub struct JudgeValidationReport {
     pub consensus_metrics: Option<ConsensusMetrics>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub regression_data: Option<RegressionData>,
+    /// Number of failed scoring calls per judge (errors, timeouts, bad JSON).
+    #[serde(default)]
+    pub judge_failures: HashMap<String, usize>,
+    /// Tests left out of the metrics because no usable judge score remained.
+    #[serde(default)]
+    pub tests_skipped: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -153,9 +162,10 @@ pub fn compute_regression(
 
     // Compute judge-by-judge degradation
     let mut judge_degradation = HashMap::new();
-    for judge in &current.judges_compared {
+    // Iterate the per-judge map rather than `judges_compared`: the map and the
+    // baseline are keyed by model name, while `judges_compared` holds full specs.
+    for (judge, &current_agreement) in &current.per_judge_agreement {
         if let Some(baseline_agreement) = baseline.per_judge_agreement.get(judge) {
-            let current_agreement = current.overall_agreement; // Simplified: use overall
             let degradation_rate = baseline_agreement - current_agreement;
 
             judge_degradation.insert(
@@ -232,17 +242,115 @@ impl FallbackConfig {
     }
 }
 
+/// One judge's attempt at scoring one output.
+#[derive(Debug)]
+pub struct JudgeOutcome {
+    pub judge: String,
+    pub result: std::result::Result<f64, String>,
+}
+
+/// Ask every primary judge for a score.
+///
+/// Under `primary+fallback`, each failed primary is followed by the first
+/// fallback judge that succeeds. The substitute is recorded under its own name
+/// so per-judge metrics stay attributable, and a judge (primary or fallback)
+/// never contributes more than one score per test.
+pub async fn collect_judge_outcomes<F, Fut>(
+    primary: &[String],
+    fallbacks: &[String],
+    cfg: &FallbackConfig,
+    score: F,
+) -> Vec<JudgeOutcome>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<f64>>,
+{
+    let mut outcomes = Vec::with_capacity(primary.len());
+    let mut used: std::collections::HashSet<&str> = primary.iter().map(String::as_str).collect();
+
+    for judge in primary {
+        let result = score(judge.clone()).await.map_err(|e| e.to_string());
+        let failed = result.is_err();
+        outcomes.push(JudgeOutcome {
+            judge: judge.clone(),
+            result,
+        });
+
+        if failed && cfg.strategy == FallbackStrategy::PrimaryWithFallback {
+            for fb in fallbacks {
+                if !used.insert(fb.as_str()) {
+                    continue;
+                }
+                match score(fb.clone()).await {
+                    Ok(s) => {
+                        outcomes.push(JudgeOutcome {
+                            judge: fb.clone(),
+                            result: Ok(s),
+                        });
+                        break;
+                    }
+                    Err(e) => outcomes.push(JudgeOutcome {
+                        judge: fb.clone(),
+                        result: Err(e.to_string()),
+                    }),
+                }
+            }
+        }
+    }
+    outcomes
+}
+
+/// Turn raw judge outcomes into aligned `(scores, judge_names)` vectors,
+/// applying the fallback strategy to failed judges.
+///
+/// Returns `None` when the test should be left out of the metrics: every judge
+/// failed and either `skip_on_all_fail` is set or the strategy has no score
+/// to substitute.
+pub fn resolve_scores(
+    outcomes: &[JudgeOutcome],
+    cfg: &FallbackConfig,
+) -> Option<(Vec<f64>, Vec<String>)> {
+    let working: Vec<f64> = outcomes
+        .iter()
+        .filter_map(|o| o.result.clone().ok())
+        .collect();
+    if working.is_empty() && (cfg.skip_on_all_fail || cfg.strategy != FallbackStrategy::Severity) {
+        return None;
+    }
+    let mean = working.iter().sum::<f64>() / working.len().max(1) as f64;
+
+    let mut scores = Vec::with_capacity(outcomes.len());
+    let mut judges = Vec::with_capacity(outcomes.len());
+    for o in outcomes {
+        let score = match (&o.result, &cfg.strategy) {
+            (Ok(s), _) => Some(*s),
+            (Err(e), FallbackStrategy::Severity) => cfg.get_fallback_score(e),
+            (Err(_), FallbackStrategy::Average) => Some(mean),
+            (Err(_), FallbackStrategy::Skip | FallbackStrategy::PrimaryWithFallback) => None,
+        };
+        // Push name and score together so the two vectors can never drift apart.
+        if let Some(s) = score {
+            scores.push(s);
+            judges.push(o.judge.clone());
+        }
+    }
+    Some((scores, judges))
+}
+
+/// Truncate to at most `max` characters without splitting a UTF-8 code point.
+fn truncate_chars(s: &str, max: usize) -> std::borrow::Cow<'_, str> {
+    match s.char_indices().nth(max) {
+        Some((byte_idx, _)) => std::borrow::Cow::Owned(format!("{}...[truncated]", &s[..byte_idx])),
+        None => std::borrow::Cow::Borrowed(s),
+    }
+}
+
 /// Score a model output against a rubric using a specific judge model.
 /// Returns the raw score (0.0-1.0) without comparing to threshold.
 /// Truncates long outputs to avoid token limits; propagates errors for caller's error handling.
 pub async fn score_output_with_judge(judge: &ModelRef, output: &str, rubric: &str) -> Result<f64> {
     // Truncate very long outputs to avoid token limits
-    let max_output_len = 2000;
-    let truncated_output = if output.len() > max_output_len {
-        format!("{}...[truncated]", &output[..max_output_len])
-    } else {
-        output.to_string()
-    };
+    let truncated_output = truncate_chars(output, 2000);
 
     let prompt = format!(
         "RUBRIC:\n{}\n\nRESPONSE TO EVALUATE:\n{}\n\nScore the response.",
@@ -265,7 +373,7 @@ pub async fn score_output_with_judge(judge: &ModelRef, output: &str, rubric: &st
             anyhow::bail!(
                 "Judge {} returned unparseable JSON: {}",
                 judge.model,
-                &result.text[..result.text.len().min(100)]
+                truncate_chars(&result.text, 100)
             );
         }
     }
@@ -402,17 +510,21 @@ pub fn compute_consensus_metrics(
 ) -> ConsensusMetrics {
     const T: f64 = 0.10;
     let (mut f, mut ma, mut s, mut fl) = (0, 0, 0, Vec::new());
+    let mut insufficient = 0;
     for (tn, ru, sc, jn) in j {
+        // One score can't agree or disagree with anything; don't count it as consensus.
         if sc.len() <= 1 {
-            f += 1;
+            insufficient += 1;
             continue;
         }
         let g = group_judges_by_agreement(sc, jn, T);
         match g.len() {
             1 => f += 1,
             2 => {
-                let sz: Vec<_> = g.iter().map(|x| x.len()).collect();
-                if sz[0] == sc.len() - 1 || sz[1] == sc.len() - 1 {
+                // Majority means the larger group holds more than half the judges;
+                // a 1-vs-1 split between two judges is a split, not a majority.
+                let largest = g.iter().map(|x| x.len()).max().unwrap_or(0);
+                if largest * 2 > sc.len() {
                     ma += 1;
                 } else {
                     s += 1;
@@ -457,6 +569,7 @@ pub fn compute_consensus_metrics(
             100.0
         },
         flagged_for_review: fl,
+        insufficient_judges_count: insufficient,
     }
 }
 
@@ -1228,6 +1341,8 @@ mod tests {
             specialization_analysis: None,
             consensus_metrics: None,
             regression_data: None,
+            judge_failures: HashMap::new(),
+            tests_skipped: 0,
         };
 
         let baseline = JudgeValidationBaseline {
@@ -1267,6 +1382,8 @@ mod tests {
             specialization_analysis: None,
             consensus_metrics: None,
             regression_data: None,
+            judge_failures: HashMap::new(),
+            tests_skipped: 0,
         };
 
         let baseline = JudgeValidationBaseline {
@@ -1303,6 +1420,8 @@ mod tests {
             specialization_analysis: None,
             consensus_metrics: None,
             regression_data: None,
+            judge_failures: HashMap::new(),
+            tests_skipped: 0,
         };
 
         let baseline = JudgeValidationBaseline {
@@ -1339,6 +1458,8 @@ mod tests {
             specialization_analysis: None,
             consensus_metrics: None,
             regression_data: None,
+            judge_failures: HashMap::new(),
+            tests_skipped: 0,
         };
 
         let baseline = JudgeValidationBaseline {
@@ -1378,6 +1499,8 @@ mod tests {
             specialization_analysis: None,
             consensus_metrics: None,
             regression_data: None,
+            judge_failures: HashMap::new(),
+            tests_skipped: 0,
         };
 
         let baseline = JudgeValidationBaseline {
@@ -1422,6 +1545,8 @@ mod tests {
             specialization_analysis: None,
             consensus_metrics: None,
             regression_data: None,
+            judge_failures: HashMap::new(),
+            tests_skipped: 0,
         };
 
         let baseline = JudgeValidationBaseline {
@@ -1461,6 +1586,17 @@ pub async fn validate_judge(
         .iter()
         .map(|spec| ModelRef::resolve(spec, "http://localhost:11434"))
         .collect::<Result<Vec<_>>>()?;
+    // Fallback judges are only resolved (and only called) under primary+fallback.
+    let fallback_refs: Vec<ModelRef> =
+        if fallback_config.strategy == FallbackStrategy::PrimaryWithFallback {
+            fallback_config
+                .fallback_judges
+                .iter()
+                .map(|spec| ModelRef::resolve(spec, "http://localhost:11434"))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
 
     // ── Phase 3: Run test suite to get actual outputs ──
     println!("  {} Running test suite...", "▸".cyan());
@@ -1538,6 +1674,8 @@ pub async fn validate_judge(
             specialization_analysis: None,
             consensus_metrics: None,
             regression_data: None,
+            judge_failures: HashMap::new(),
+            tests_skipped: 0,
         });
     }
 
@@ -1558,61 +1696,84 @@ pub async fn validate_judge(
     );
 
     let mut judgements: Vec<(String, String, Vec<f64>, Vec<String>)> = Vec::new();
-    let judge_names: Vec<String> = judge_refs.iter().map(|j| j.model.clone()).collect();
+    let mut judge_failures: HashMap<String, usize> = HashMap::new();
+    let mut tests_skipped = 0usize;
+
+    // Judges are reported by model name; look them up by that name when scoring.
+    let primary_names: Vec<String> = judge_refs.iter().map(|j| j.model.clone()).collect();
+    let fallback_names: Vec<String> = fallback_refs.iter().map(|j| j.model.clone()).collect();
+    let refs_by_name: HashMap<&str, &ModelRef> = judge_refs
+        .iter()
+        .chain(fallback_refs.iter())
+        .map(|r| (r.model.as_str(), r))
+        .collect();
 
     for (test_name, output, rubric) in test_judge_pairs {
         pb.inc(1);
 
-        let mut scores = Vec::new();
-        let mut has_errors = false;
+        let (output, rubric_ref, refs) = (&output, &rubric, &refs_by_name);
+        let outcomes =
+            collect_judge_outcomes(
+                &primary_names,
+                &fallback_names,
+                &fallback_config,
+                |name| async move {
+                    score_output_with_judge(refs[name.as_str()], output, rubric_ref).await
+                },
+            )
+            .await;
 
-        // Run output through each judge
-        for judge in &judge_refs {
-            match score_output_with_judge(judge, &output, &rubric).await {
-                Ok(score) => {
-                    scores.push(score);
-                }
-                Err(e) => {
-                    has_errors = true;
-                    let error_msg = e.to_string();
-
-                    // Determine fallback score based on configured strategy
-                    if let Some(fallback_score) = fallback_config.get_fallback_score(&error_msg) {
-                        // Log the error with appropriate level
-                        if error_msg.contains("401") || error_msg.contains("Unauthorized") {
-                            eprintln!("  {} {}: Invalid API key (401)", "✗".red(), judge.model);
-                        } else if error_msg.contains("timeout") || error_msg.contains("timed out") {
-                            eprintln!("  {} {}: Timeout", "⏱".yellow(), judge.model);
-                        } else if error_msg.contains("unparseable") {
-                            eprintln!("  {} {}: Bad JSON response", "⚠".yellow(), judge.model);
-                        } else {
-                            eprintln!("  {} {}: {}", "⚠".yellow(), judge.model, error_msg);
-                        }
-                        scores.push(fallback_score);
-                    } else {
-                        // Skip strategy or will compute average later
-                        eprintln!(
-                            "  {} {}: Skipping due to strategy ({})",
-                            "⊘".yellow(),
-                            judge.model,
-                            format!("{:?}", fallback_config.strategy).to_lowercase()
-                        );
-                    }
-                }
+        for o in &outcomes {
+            if let Err(msg) = &o.result {
+                *judge_failures.entry(o.judge.clone()).or_default() += 1;
+                let what = if msg.contains("401") || msg.contains("Unauthorized") {
+                    "Invalid API key (401)"
+                } else if msg.contains("timeout") || msg.contains("timed out") {
+                    "Timeout"
+                } else if msg.contains("unparseable") {
+                    "Bad JSON response"
+                } else {
+                    msg.as_str()
+                };
+                pb.println(format!(
+                    "  {} {} on {}: {}",
+                    "⚠".yellow(),
+                    o.judge,
+                    test_name,
+                    what
+                ));
             }
         }
 
-        judgements.push((test_name, rubric, scores, judge_names.clone()));
-
-        if has_errors && judgements.len().is_multiple_of(5) {
-            pb.println(format!(
-                "  {} Some judges failed; using fallback scores",
-                "⚠".yellow()
-            ));
+        match resolve_scores(&outcomes, &fallback_config) {
+            Some((scores, names)) => judgements.push((test_name, rubric, scores, names)),
+            None => tests_skipped += 1,
         }
     }
     pb.finish_with_message("✓ Collected");
     println!();
+
+    if !judge_failures.is_empty() {
+        let mut failed: Vec<_> = judge_failures.iter().collect();
+        failed.sort();
+        println!(
+            "  {} Judge failures ({} strategy): {}",
+            "⚠".yellow(),
+            format!("{:?}", fallback_config.strategy).to_lowercase(),
+            failed
+                .iter()
+                .map(|(j, n)| format!("{j} ×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if tests_skipped > 0 {
+        println!(
+            "  {} {} test(s) skipped: no usable judge score",
+            "⊘".yellow(),
+            tests_skipped
+        );
+    }
 
     // Compute metrics
     let (overall_agreement, per_rubric_metrics, divergent_cases) = compute_metrics(&judgements);
@@ -1634,5 +1795,241 @@ pub async fn validate_judge(
         specialization_analysis: Some(specialization_analysis),
         consensus_metrics: Some(consensus_metrics),
         regression_data: None,
+        judge_failures,
+        tests_skipped,
     })
+}
+
+#[cfg(test)]
+mod correctness_tests {
+    use super::*;
+
+    fn cfg(strategy: FallbackStrategy) -> FallbackConfig {
+        FallbackConfig {
+            strategy,
+            auth_score: 0.0,
+            timeout_score: 0.5,
+            error_score: 0.5,
+            fallback_judges: vec![],
+            skip_on_all_fail: false,
+        }
+    }
+
+    fn ok(judge: &str, score: f64) -> JudgeOutcome {
+        JudgeOutcome {
+            judge: judge.into(),
+            result: Ok(score),
+        }
+    }
+
+    fn err(judge: &str, msg: &str) -> JudgeOutcome {
+        JudgeOutcome {
+            judge: judge.into(),
+            result: Err(msg.into()),
+        }
+    }
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    // ── #1: scores must stay aligned with the judge that produced them ──
+
+    #[test]
+    fn skipped_judge_does_not_shift_attribution() {
+        let outcomes = vec![ok("a", 0.9), err("b", "timeout"), ok("c", 0.2)];
+        let (scores, judges) = resolve_scores(&outcomes, &cfg(FallbackStrategy::Skip)).unwrap();
+        assert_eq!(judges, names(&["a", "c"]));
+        assert_eq!(scores, vec![0.9, 0.2]);
+    }
+
+    #[test]
+    fn per_judge_metrics_attribute_correctly_after_skip() {
+        let outcomes = vec![ok("a", 0.8), err("b", "boom"), ok("c", 0.8), ok("d", 0.0)];
+        let (scores, judges) = resolve_scores(&outcomes, &cfg(FallbackStrategy::Skip)).unwrap();
+        let per_judge = compute_per_judge_metrics(&[("t".into(), "r".into(), scores, judges)]);
+        assert!(
+            !per_judge.contains_key("b"),
+            "failed judge must not get a score"
+        );
+        assert!(per_judge["d"] < per_judge["a"], "outlier is d, not c");
+        assert_eq!(per_judge["a"], per_judge["c"]);
+    }
+
+    // ── #3: fallback strategies ──
+
+    #[test]
+    fn severity_fills_failed_judge_with_configured_score() {
+        let outcomes = vec![ok("a", 0.9), err("b", "401 Unauthorized")];
+        let (scores, judges) = resolve_scores(&outcomes, &cfg(FallbackStrategy::Severity)).unwrap();
+        assert_eq!(judges, names(&["a", "b"]));
+        assert_eq!(scores, vec![0.9, 0.0]);
+    }
+
+    #[test]
+    fn average_fills_failed_judge_with_mean_of_working_judges() {
+        let outcomes = vec![ok("a", 0.9), err("b", "boom"), ok("c", 0.5)];
+        let (scores, judges) = resolve_scores(&outcomes, &cfg(FallbackStrategy::Average)).unwrap();
+        assert_eq!(judges, names(&["a", "b", "c"]));
+        assert!((scores[1] - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn skip_on_all_fail_drops_test_under_severity() {
+        let mut c = cfg(FallbackStrategy::Severity);
+        c.skip_on_all_fail = true;
+        let outcomes = vec![err("a", "timeout"), err("b", "boom")];
+        assert!(resolve_scores(&outcomes, &c).is_none());
+    }
+
+    #[test]
+    fn severity_without_skip_on_all_fail_keeps_fallback_scores() {
+        let outcomes = vec![err("a", "timeout"), err("b", "401")];
+        let (scores, _) = resolve_scores(&outcomes, &cfg(FallbackStrategy::Severity)).unwrap();
+        assert_eq!(scores, vec![0.5, 0.0]);
+    }
+
+    #[test]
+    fn non_severity_strategies_drop_test_when_every_judge_fails() {
+        let outcomes = vec![err("a", "x"), err("b", "y")];
+        for s in [
+            FallbackStrategy::Skip,
+            FallbackStrategy::Average,
+            FallbackStrategy::PrimaryWithFallback,
+        ] {
+            assert!(resolve_scores(&outcomes, &cfg(s)).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn primary_with_fallback_substitutes_first_working_fallback() {
+        let mut c = cfg(FallbackStrategy::PrimaryWithFallback);
+        c.fallback_judges = names(&["f1", "f2"]);
+        let outcomes = collect_judge_outcomes(
+            &names(&["a", "b"]),
+            &names(&["f1", "f2"]),
+            &c,
+            |j| async move {
+                match j.as_str() {
+                    "a" => Ok(0.9),
+                    "f2" => Ok(0.4),
+                    _ => anyhow::bail!("down"),
+                }
+            },
+        )
+        .await;
+        let (scores, judges) = resolve_scores(&outcomes, &c).unwrap();
+        assert_eq!(judges, names(&["a", "f2"]));
+        assert_eq!(scores, vec![0.9, 0.4]);
+    }
+
+    #[tokio::test]
+    async fn fallback_judge_is_used_at_most_once_per_test() {
+        let mut c = cfg(FallbackStrategy::PrimaryWithFallback);
+        c.fallback_judges = names(&["f1"]);
+        let outcomes =
+            collect_judge_outcomes(&names(&["a", "b"]), &names(&["f1"]), &c, |j| async move {
+                match j.as_str() {
+                    "f1" => Ok(0.4),
+                    _ => anyhow::bail!("down"),
+                }
+            })
+            .await;
+        let (_, judges) = resolve_scores(&outcomes, &c).unwrap();
+        assert_eq!(judges, names(&["f1"]));
+    }
+
+    #[tokio::test]
+    async fn fallback_judges_not_called_for_other_strategies() {
+        let c = cfg(FallbackStrategy::Skip);
+        let outcomes =
+            collect_judge_outcomes(&names(&["a"]), &names(&["f1"]), &c, |j| async move {
+                assert_ne!(j, "f1", "fallback judge must not be called");
+                anyhow::bail!("down")
+            })
+            .await;
+        assert_eq!(outcomes.len(), 1);
+    }
+
+    // ── #2: truncation must respect UTF-8 boundaries ──
+
+    #[test]
+    fn truncate_chars_handles_multibyte_boundary() {
+        let s = "é".repeat(1500); // 3000 bytes; byte 2000 is a char boundary but 1999 isn't
+        let t = truncate_chars(&s, 1999);
+        assert!(t.starts_with(&"é".repeat(1999).chars().take(10).collect::<String>()));
+        let em = "—".repeat(50); // 3-byte chars
+        assert_eq!(
+            truncate_chars(&em, 10)
+                .chars()
+                .filter(|c| *c == '—')
+                .count(),
+            10
+        );
+        assert_eq!(truncate_chars("short", 100), "short");
+    }
+
+    #[test]
+    fn unparseable_error_preview_does_not_panic_on_multibyte() {
+        // 99 ASCII bytes followed by a 3-byte char: byte 100 splits the char
+        let text = format!("{}—{{bad", "x".repeat(99));
+        let preview = truncate_chars(&text, 100);
+        assert!(preview.len() >= 100);
+    }
+
+    // ── #4: per-judge regression uses per-judge agreement ──
+
+    #[test]
+    fn regression_uses_each_judges_own_agreement() {
+        let current = JudgeValidationReport {
+            suite_name: "s".into(),
+            total_tests: 1,
+            tests_with_judges: 1,
+            judges_compared: names(&["j1", "j2"]),
+            overall_agreement: 80.0,
+            per_judge_agreement: [("j1".to_string(), 95.0), ("j2".to_string(), 60.0)]
+                .into_iter()
+                .collect(),
+            per_rubric_metrics: HashMap::new(),
+            divergent_cases: vec![],
+            summary: ValidationSummary {
+                is_reliable: true,
+                confidence_level: "high".into(),
+                recommendations: vec![],
+            },
+            specialization_analysis: None,
+            consensus_metrics: None,
+            regression_data: None,
+            judge_failures: HashMap::new(),
+            tests_skipped: 0,
+        };
+        let baseline = JudgeValidationBaseline {
+            timestamp: "t".into(),
+            suite_name: "s".into(),
+            overall_agreement: 90.0,
+            per_judge_agreement: [("j1".to_string(), 90.0), ("j2".to_string(), 90.0)]
+                .into_iter()
+                .collect(),
+            per_rubric_metrics: HashMap::new(),
+        };
+        let r = compute_regression(&current, &baseline);
+        assert_eq!(r.judge_degradation["j1"].current_agreement, 95.0);
+        assert_eq!(r.judge_degradation["j1"].degradation_rate, -5.0);
+        assert_eq!(r.judge_degradation["j2"].current_agreement, 60.0);
+        assert_eq!(r.judge_degradation["j2"].degradation_rate, 30.0);
+    }
+
+    // ── #5: tests with <2 scores must not count as full consensus ──
+
+    #[test]
+    fn single_score_tests_are_not_full_consensus() {
+        let j = vec![
+            ("t1".into(), "r".into(), vec![0.9], names(&["a"])),
+            ("t2".into(), "r".into(), vec![0.1, 0.9], names(&["a", "b"])),
+        ];
+        let m = compute_consensus_metrics(&j);
+        assert_eq!(m.full_consensus_count, 0);
+        assert_eq!(m.insufficient_judges_count, 1);
+        assert_eq!(m.consensus_percentage, 0.0);
+    }
 }
