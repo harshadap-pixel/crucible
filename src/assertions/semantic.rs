@@ -28,6 +28,7 @@ pub async fn check(
             score: 0.0,
             reason: format!("Embedding failed — is '{}' pulled in Ollama?", EMBED_MODEL),
             weight,
+            errored: false,
         });
     }
 
@@ -40,5 +41,6 @@ pub async fn check(
         score: sim.clamp(0.0, 1.0),
         reason: format!("Cosine similarity {:.3} (threshold {:.2})", sim, threshold),
         weight,
+        errored: false,
     })
 }

@@ -35,6 +35,7 @@ pub async fn check(
                         score,
                         reason,
                         weight,
+                        errored: false,
                     });
                 }
                 last_err = format!("Bad JSON on attempt {attempt}: {}", result.text);
@@ -45,13 +46,15 @@ pub async fn check(
         }
     }
 
-    // Fallback: judge failed to respond properly
+    // Judge never produced a usable score: report the assertion as errored so a
+    // broken judge isn't mistaken for a bad model answer.
     Ok(AssertionResult {
         kind: "llm_judge".into(),
         passed: false,
         score: 0.0,
-        reason: format!("Judge returned unparseable output: {last_err}"),
+        reason: format!("Judge error after 3 attempts: {last_err}"),
         weight,
+        errored: true,
     })
 }
 
@@ -65,4 +68,69 @@ fn parse_judge_response(text: &str) -> Option<(f64, String)> {
     let score = v.get("score")?.as_f64()?;
     let reason = v.get("reason")?.as_str()?.to_string();
     Some((score.clamp(0.0, 1.0), reason))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::{CompletionResult, Provider};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    /// Judge stub that always replies with the same text.
+    struct FixedJudge(&'static str);
+
+    #[async_trait]
+    impl Provider for FixedJudge {
+        async fn chat(
+            &self,
+            _model: &str,
+            _system: Option<&str>,
+            _user: &str,
+            _temperature: f32,
+        ) -> Result<CompletionResult> {
+            Ok(CompletionResult {
+                text: self.0.into(),
+                latency_ms: 0,
+                ttft_ms: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+            })
+        }
+
+        fn name(&self) -> &'static str {
+            "fixed"
+        }
+    }
+
+    fn judge(reply: &'static str) -> ModelRef {
+        ModelRef {
+            provider: Arc::new(FixedJudge(reply)),
+            model: "stub".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn broken_judge_is_errored_not_just_failed() {
+        let r = check(&judge("not json at all"), "out", "rubric", 0.5, 1.0)
+            .await
+            .unwrap();
+        assert!(!r.passed);
+        assert!(r.errored);
+    }
+
+    #[tokio::test]
+    async fn low_score_is_a_failure_not_an_error() {
+        let r = check(
+            &judge(r#"{"score": 0.1, "reason": "bad"}"#),
+            "out",
+            "rubric",
+            0.5,
+            1.0,
+        )
+        .await
+        .unwrap();
+        assert!(!r.passed);
+        assert!(!r.errored);
+    }
 }

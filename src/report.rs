@@ -53,8 +53,9 @@ pub fn print_run(
 
         let (delta_str, flag_str) = if let Some(base) = baseline_record {
             let delta = r.score - base.score;
-            let flip = base.passed && !r.passed;
-            let drift = delta < -reg_thresh;
+            // A judge error says nothing about the model, so it can't be a regression.
+            let flip = base.passed && !r.passed && !r.errored;
+            let drift = delta < -reg_thresh && !r.errored;
 
             let ds = format!("{:+.3}", delta);
             let ds = if delta >= 0.0 {
@@ -85,6 +86,8 @@ pub fn print_run(
 
         let status = if r.passed {
             "✅ PASS".green().to_string()
+        } else if r.errored {
+            "⚠ ERROR".yellow().to_string()
         } else {
             "❌ FAIL".red().to_string()
         };
@@ -119,10 +122,14 @@ pub fn print_run(
         0.0
     };
 
-    let summary_line = format!(
+    let errored = results.iter().filter(|r| r.errored).count();
+    let mut summary_line = format!(
         "SUMMARY   {}/{} passed   avg score: {:.3}",
         passed, total, avg
     );
+    if errored > 0 {
+        summary_line.push_str(&format!("   {errored} judge error(s)"));
+    }
 
     if regression_count > 0 {
         println!(
