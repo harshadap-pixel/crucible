@@ -34,6 +34,9 @@ pub struct TestResult {
     pub description: Option<String>,
     /// Raw model output from the last run (empty string for n_runs > 1).
     pub output: String,
+    /// An assertion couldn't be evaluated in at least one run (e.g. judge down).
+    /// The test still counts as not passed; this only says why.
+    pub errored: bool,
 }
 
 /// Outcome of running a suite against one model — returned by [`execute_suite`].
@@ -211,6 +214,8 @@ fn print_dataset_rows(results: &[TestResult]) {
     for r in results {
         let status = if r.passed {
             "✅".to_string()
+        } else if r.errored {
+            "⚠".to_string()
         } else {
             "❌".to_string()
         };
@@ -802,11 +807,12 @@ fn print_json(
         .iter()
         .map(|r| {
             format!(
-                "    {{\"name\":{},\"passed\":{},\"score\":{:.4},\"pass_rate\":{:.4},\
+                "    {{\"name\":{},\"passed\":{},\"errored\":{},\"score\":{:.4},\"pass_rate\":{:.4},\
              \"latency_ms\":{},\"ttft_ms\":{},\"input_tokens\":{},\"output_tokens\":{},\
              \"output\":{},\"reason\":{}}}",
                 json_str(&r.test_name),
                 r.passed,
+                r.errored,
                 r.score,
                 r.pass_rate,
                 r.latency_ms,
@@ -985,6 +991,7 @@ async fn run_test(
 
     let mut scores = Vec::new();
     let mut passed_n = 0u32;
+    let mut errored = false;
     let mut last_reason = String::new();
     let mut last_output = String::new();
     let mut total_latency = 0u64;
@@ -1138,6 +1145,7 @@ async fn run_test(
         .await?;
 
         let passed = assertion_results.iter().all(|a| a.passed);
+        errored |= assertion_results.iter().any(|a| a.errored);
         let reason = assertion_results
             .iter()
             .filter(|a| !a.passed)
@@ -1178,6 +1186,7 @@ async fn run_test(
         reason: last_reason,
         description: test.description.clone(),
         output: last_output,
+        errored,
     })
 }
 

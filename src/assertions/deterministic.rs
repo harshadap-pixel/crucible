@@ -17,6 +17,7 @@ pub fn check_regex(pattern: &str, output: &str, weight: f64) -> Result<Assertion
             format!("Pattern /{pattern}/ did not match")
         },
         weight,
+        errored: false,
     })
 }
 
@@ -43,6 +44,7 @@ pub fn check_json_field(
                 score: 0.0,
                 reason: format!("Output is not valid JSON: {e}"),
                 weight,
+                errored: false,
             })
         }
     };
@@ -58,6 +60,7 @@ pub fn check_json_field(
                 score: 0.0,
                 reason: format!("Path '{path}' not found in JSON output"),
                 weight,
+                errored: false,
             })
         }
     };
@@ -100,6 +103,7 @@ pub fn check_json_field(
         score: if passed { 1.0 } else { 0.0 },
         reason,
         weight,
+        errored: false,
     })
 }
 
@@ -162,6 +166,7 @@ pub fn check_json_schema(schema_str: &str, output: &str, weight: f64) -> Result<
                 score: 0.0,
                 reason: format!("Output is not valid JSON: {e}"),
                 weight,
+                errored: false,
             });
         }
     };
@@ -175,6 +180,7 @@ pub fn check_json_schema(schema_str: &str, output: &str, weight: f64) -> Result<
                 score: 0.0,
                 reason: format!("Suite schema definition is invalid JSON: {e}"),
                 weight,
+                errored: false,
             });
         }
     };
@@ -198,6 +204,7 @@ pub fn check_json_schema(schema_str: &str, output: &str, weight: f64) -> Result<
             format!("Schema violations: {}", errors.join("; "))
         },
         weight,
+        errored: false,
     })
 }
 
@@ -213,6 +220,7 @@ pub fn check_contains(value: &str, output: &str, weight: f64) -> AssertionResult
             format!("Output does not contain '{value}'")
         },
         weight,
+        errored: false,
     }
 }
 
@@ -228,6 +236,7 @@ pub fn check_not_contains(value: &str, output: &str, weight: f64) -> AssertionRe
             format!("Output unexpectedly contains '{value}'")
         },
         weight,
+        errored: false,
     }
 }
 
@@ -269,6 +278,7 @@ pub fn check_snapshot(
             score: 1.0,
             reason: format!("Snapshot updated: {}", path.display()),
             weight,
+            errored: false,
         });
     }
 
@@ -281,6 +291,7 @@ pub fn check_snapshot(
             score: 1.0,
             reason: format!("Snapshot created: {}", path.display()),
             weight,
+            errored: false,
         });
     }
 
@@ -317,6 +328,7 @@ pub fn check_snapshot(
             )
         },
         weight,
+        errored: false,
     })
 }
 

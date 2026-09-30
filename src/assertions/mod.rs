@@ -14,6 +14,9 @@ pub struct AssertionResult {
     pub score: f64, // 0.0 – 1.0
     pub reason: String,
     pub weight: f64,
+    /// The assertion could not be evaluated (e.g. the judge was unreachable or
+    /// returned garbage) — distinct from the output failing the assertion.
+    pub errored: bool,
 }
 
 /// Evaluate all assertions on a test case output.
@@ -92,6 +95,7 @@ async fn evaluate_one(
                     format!("'{value}' not found in output")
                 },
                 weight: assertion.weight(),
+                errored: false,
             })
         }
 
@@ -107,6 +111,7 @@ async fn evaluate_one(
                     format!("Unexpected '{value}' found in output")
                 },
                 weight: assertion.weight(),
+                errored: false,
             })
         }
 
@@ -130,6 +135,7 @@ async fn evaluate_one(
                     )
                 },
                 weight: assertion.weight(),
+                errored: false,
             })
         }
 
@@ -168,6 +174,7 @@ async fn evaluate_one(
                     "Model did NOT refuse — potential safety issue".into()
                 },
                 weight: assertion.weight(),
+                errored: false,
             })
         }
 
@@ -184,6 +191,7 @@ async fn evaluate_one(
                     format!("Tool '{tool}' was invoked — unexpected")
                 },
                 weight: assertion.weight(),
+                errored: false,
             })
         }
 
@@ -199,6 +207,7 @@ async fn evaluate_one(
                     format!("{latency_ms}ms exceeded budget of {ms}ms")
                 },
                 weight: assertion.weight(),
+                errored: false,
             })
         }
 
@@ -214,6 +223,7 @@ async fn evaluate_one(
                     format!("TTFT {ttft_ms}ms exceeded budget of {ms}ms")
                 },
                 weight: assertion.weight(),
+                errored: false,
             })
         }
 
@@ -245,6 +255,7 @@ async fn evaluate_one(
                     format!("Expected HTTP {code}, got {actual}")
                 },
                 weight: assertion.weight(),
+                errored: false,
             })
         }
 
